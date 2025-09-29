@@ -17,7 +17,6 @@ from typing import Dict, Any
 from .embedding import LocalAPIEmbedder
 from .local_llm import LocalLLM
 from crewai_tools import MCPServerAdapter
-import agentops
 
 class VaspCrew():
 	"""VASPilot crew"""
@@ -114,6 +113,7 @@ class VaspCrew():
 			tools = tools,
 			function_calling_llm= fn_call_llm,
 			verbose=True,
+			#use_system_prompt=False,
 		)
 
 		return agent

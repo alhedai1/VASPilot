@@ -39,7 +39,8 @@ def start_quart():
         print(f"❌ 配置文件不存在: {config_path}")
         return
     
-    with open(config_path, "r", encoding='utf-8') as f:
+    #with open(config_path, "r", encoding='utf-8') as f:
+    with open(config_path, "r") as f:
         crew_config = yaml.load(f, Loader=yaml.FullLoader)
     
     # 创建并启动服务器

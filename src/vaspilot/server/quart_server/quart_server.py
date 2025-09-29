@@ -100,6 +100,11 @@ class QuartCrewServer(CrewServer):
         self._running_threads: Dict[str, threading.Thread] = {}
         self._crew_thread_ids: Dict[str, int] = {}
         
+        # 日志基础设施（启动时在事件循环内初始化）
+        self._log_queue = None
+        self._log_worker_task = None
+        self._event_loop = None
+        
         # 设置路由
         self._setup_routes()
 
@@ -219,7 +224,7 @@ class QuartCrewServer(CrewServer):
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             async with db.execute(
-                'SELECT * FROM activity_logs WHERE conversation_id = ? ORDER BY timestamp',
+                'SELECT * FROM activity_logs WHERE conversation_id = ? ORDER BY id ASC',
                 (conversation_id,)
             ) as cursor:
                 logs = await cursor.fetchall()
@@ -1063,14 +1068,62 @@ class QuartCrewServer(CrewServer):
             self._schedule_log_to_db(conversation_id, 'tool_output', log_content, role_name=tool_name)
 
     def _schedule_log_to_db(self, conversation_id, log_type, content, role_name=None):
-        """在事件循环中调度异步写库任务；若无事件循环则开线程执行。"""
+        """在事件循环中的单一日志队列排队，保证入库顺序与调用顺序一致。"""
+        self._enqueue_log_event(conversation_id, log_type, content, role_name)
+
+    async def _log_worker(self):
+        """单线程异步日志写库工作协程，严格按队列顺序写入。"""
+        if self._log_queue is None:
+            self._log_queue = asyncio.Queue()
         try:
-            loop = asyncio.get_running_loop()
-            loop.create_task(self._log_to_db_async(conversation_id, log_type, content, role_name))
-        except RuntimeError:
-            t = threading.Thread(target=lambda: asyncio.run(self._log_to_db_async(conversation_id, log_type, content, role_name)))
-            t.daemon = True
-            t.start()
+            async with aiosqlite.connect(self.db_path) as conn:
+                while True:
+                    item = await self._log_queue.get()
+                    try:
+                        conversation_id, log_type, content, role_name = item
+                        await conn.execute(
+                            'INSERT INTO activity_logs (conversation_id, type, role_name, content) VALUES (?, ?, ?, ?)',
+                            (conversation_id, log_type, role_name, content)
+                        )
+                        await conn.commit()
+                    finally:
+                        self._log_queue.task_done()
+        except asyncio.CancelledError:
+            pass
+
+    def _enqueue_log_event(self, conversation_id, log_type, content, role_name=None):
+        """将日志事件投递到主事件循环的日志队列。
+        - 在同一事件循环内，直接 put_nowait 以保持调用顺序；
+        - 从其他线程调用时，使用 run_coroutine_threadsafe 投递，尽可能保持先后顺序；
+        - 如队列未初始化，兜底为同步直写（初始化之前很少发生）。
+        """
+        if self._log_queue is not None and self._event_loop is not None:
+            try:
+                loop = asyncio.get_running_loop()
+                if loop is self._event_loop:
+                    self._log_queue.put_nowait((conversation_id, log_type, content, role_name))
+                else:
+                    asyncio.run_coroutine_threadsafe(
+                        self._log_queue.put((conversation_id, log_type, content, role_name)),
+                        self._event_loop
+                    )
+            except RuntimeError:
+                asyncio.run_coroutine_threadsafe(
+                    self._log_queue.put((conversation_id, log_type, content, role_name)),
+                    self._event_loop
+                )
+        else:
+            # 兜底：队列未就绪时同步直写，避免日志丢失
+            import sqlite3
+            try:
+                with sqlite3.connect(self.db_path) as conn:
+                    conn.execute(
+                        'INSERT INTO activity_logs (conversation_id, type, role_name, content) VALUES (?, ?, ?, ?)',
+                        (conversation_id, log_type, role_name, content)
+                    )
+                    conn.commit()
+            except Exception as e:
+                print(f"Direct log fallback failed: {e}")
 
     def _register_mapping(self, conversation_id: str, crew_fingerprint: str) -> None:
         """注册 conversation_id 与 crew_fingerprint 映射。"""
@@ -1129,6 +1182,11 @@ class QuartCrewServer(CrewServer):
         
         # 初始化数据库
         await self._init_db()
+        
+        # 初始化日志队列与工作协程（在主事件循环中）
+        self._event_loop = asyncio.get_running_loop()
+        self._log_queue = asyncio.Queue()
+        self._log_worker_task = asyncio.create_task(self._log_worker())
         
         # 设置会话上下文
         async def set_conversation_context(conversation_id):

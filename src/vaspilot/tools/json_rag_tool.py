@@ -23,7 +23,7 @@ class JsonApproxSearch(BaseTool):
     JSON format: {tag_name: {default_value, description, detailed_description, related_tags}}
     """
     
-    name: str = "approximate_search_tool"
+    name: str = "json_approx_search_tool"
     description: str = (
         "Use RAG technology to search for relevant information from the JSON knowledge base."
         "Can search for the most relevant configuration items and return short details."
@@ -155,13 +155,13 @@ class JsonApproxSearch(BaseTool):
         return response
 
 class JsonStrictSearchInput(BaseModel):
-    tag_name: str = Field(description="the exact tag_name to query details.")
+    page_name: str = Field(description="the exact page_name to query details.")
 
 class JsonStrictSearch(BaseTool):
     """
     Tool to query detailed descriptions
     """
-    name: str = "strict_search_tool"
+    name: str = "json_strict_search_tool"
     description: str = "Tool to query detailed descriptions. The detailed description is long, only query the most important tags."
     args_schema: Type[BaseModel] = JsonStrictSearchInput
     source_files: Set[str] = Field(default_factory=set)
@@ -190,8 +190,8 @@ class JsonStrictSearch(BaseTool):
             
         return self
 
-    def _run(self, tag_name: str) -> str:
-        if self.data_dict.get(tag_name, None) is not None:
-            return self.data_dict[tag_name]
+    def _run(self, page_name: str) -> str:
+        if self.data_dict.get(page_name, None) is not None:
+            return self.data_dict[page_name]
         else:
-            return f"No detailed description found for tag_name: {tag_name}"
+            return f"No detailed description found for page_name: {page_name}"
