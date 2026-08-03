@@ -1,13 +1,13 @@
 #Directories for neccessary files in submitting a VASP jobs. e.g. slurm.sh and vdw_kernel.bindat.
-attachment_path: your-path-to-this-example/mcp/attachment
+attachment_path: C:/Users/iAI/Desktop/VASPilot/VASPilot/examples/1.Basic/mcp/attachment
 #Directory for storing the work directory.
-work_dir: your-path-to-this-example/mcp/work
+work_dir: C:/Users/iAI/Desktop/VASPilot/VASPilot/examples/1.Basic/mcp/work
 #Path of database for storing the mcp tool execution records.
-db_path: your-path-to-this-example/mcp/record/record.db
+db_path: C:/Users/iAI/Desktop/VASPilot/VASPilot/examples/1.Basic/mcp/record/record.db
 #API key for the Materials Project.
-mp_api_key: your-mp-api-key
+mp_api_key: JF8xfYq3gTya7toiyrAxVWG2yJ4QM5VY
 #Directory for storing the downloaded structures.
-structure_path: your-path-to-this-example/mcp/downloads
+structure_path: C:/Users/iAI/Desktop/VASPilot/VASPilot/examples/1.Basic/mcp/downloads
 #Default INCAR settings for different VASP jobs.
 VASP_default_INCAR:
   relaxation:

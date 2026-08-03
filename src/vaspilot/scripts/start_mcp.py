@@ -30,6 +30,7 @@ def start_mcp():
     os.makedirs(work_dir, exist_ok=True)
     
     # 检查配置文件（如果需要的话）
+    config_path = Path(config_path)
     if not config_path.exists():
         print(f"❌ 配置文件不存在: {config_path}")
         return

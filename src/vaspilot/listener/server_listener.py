@@ -1,4 +1,4 @@
-from crewai.utilities.events import (
+from crewai.events import (
     CrewKickoffStartedEvent,
     CrewKickoffCompletedEvent,
     AgentExecutionCompletedEvent,
@@ -12,8 +12,8 @@ from datetime import datetime
 import json
 from typing import Dict, Any, List
 
-from crewai.utilities.events.base_event_listener import BaseEventListener
-from crewai.utilities.events.crewai_event_bus import CrewAIEventsBus
+from crewai.events.base_event_listener import BaseEventListener
+from crewai.events.event_bus import CrewAIEventsBus
 from abc import ABC, abstractmethod
 
 from pydantic import BaseModel, Field

@@ -34,7 +34,7 @@ def main(config_path: str = None, port: int = 8933, host: str = "0.0.0.0"):
     # 初始化SQLite数据库
     db = VaspCalculationDB(db_path=db_path)
 
-    mcp = FastMCP("VASP Agent", port=port, host=host, stateless_http=True)
+    mcp = FastMCP("VASP Agent")
 
     def write_record(calculation_id: str, data: dict):
         """写入计算记录到SQLite数据库"""
@@ -849,7 +849,7 @@ def main(config_path: str = None, port: int = 8933, host: str = "0.0.0.0"):
             
         return result_dict
 
-    mcp.run(transport="streamable-http")
+    mcp.run(transport="streamable-http", host=host, port=port, stateless_http=True)
 
 if __name__ == '__main__':
     main()

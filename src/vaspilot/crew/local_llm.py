@@ -22,14 +22,14 @@ from datetime import datetime
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field
 
-from crewai.utilities.events.llm_events import (
+from crewai.events.types.llm_events import (
     LLMCallCompletedEvent,
     LLMCallFailedEvent,
     LLMCallStartedEvent,
     LLMCallType,
     LLMStreamChunkEvent,
 )
-from crewai.utilities.events.tool_usage_events import (
+from crewai.events.types.tool_usage_events import (
     ToolUsageStartedEvent,
     ToolUsageFinishedEvent,
     ToolUsageErrorEvent,
@@ -43,7 +43,7 @@ from typing import TextIO
 from crewai.llms.base_llm import BaseLLM
 from crewai.utilities.events import crewai_event_bus
 from crewai.utilities.exceptions.context_window_exceeding_exception import (
-    LLMContextLengthExceededException,
+    LLMContextLengthExceededError,
 )
 
 load_dotenv()

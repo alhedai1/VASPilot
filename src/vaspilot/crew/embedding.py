@@ -1,9 +1,14 @@
 import requests
-from chromadb import Documents, Embeddings, EmbeddingFunction
+from crewai.rag.core.types import Documents, Embeddings
+from crewai.rag.embeddings.providers.custom.embedding_callable import CustomEmbeddingFunction
 from typing import cast
 from urllib.parse import urljoin
 
-class LocalAPIEmbedder(EmbeddingFunction):
+class LocalAPIEmbedder(CustomEmbeddingFunction):
+    @staticmethod
+    def name() -> str:
+        return "local_api_embedder"
+    
     def __init__(self, url: str = "http://172.16.8.24:8003/v1/", 
                  model_id: str = "BAAI/bge-m3",
                  api_key: str = "EMPTY"):

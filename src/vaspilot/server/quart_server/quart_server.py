@@ -863,7 +863,11 @@ class QuartCrewServer(CrewServer):
             # 创建任务
             task = Task(
                 description=task_description,
-                expected_output="A detailed report, including the execution process, calculation results, and the location of the drawn charts.",
+                # expected_output="A detailed report, including the execution process, calculation results, and the location of the drawn charts.",
+                expected_output=(
+                    "A concise, factual report addressing only the user's requested task. "
+                    "Do not add calculations, plots, or additional work unless explicitly requested. "
+                    "Only report agent and tool actions that actually occurred."),
                 output_file=f'crew_output_{uuid.uuid4().hex[:8]}.md',
             )
             

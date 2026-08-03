@@ -130,6 +130,15 @@ class VaspCrew():
 		"""Creates the VASPilot crew"""
 		if not os.path.exists(f"{work_dir}/memory/"):
 			os.makedirs(f"{work_dir}/memory/")
+		embedder_config = {
+			"provider": "custom",
+			"config": {
+				"embedding_callable": LocalAPIEmbedder,
+				"url": self.config["embbeder"]["url"],
+				"model_id": self.config["embbeder"]["model_id"],
+				"api_key": self.config["embbeder"]["api_key"],
+			},
+		}
 		tool_dict = self._create_tools()
 		agent_dict = self._create_working_agents(tool_dict)
 		manager_agent = self._create_manager_agent()
@@ -142,34 +151,26 @@ class VaspCrew():
 			verbose=True,
 			output_log_file=f"{work_dir}/output.log",
 			manager_agent=manager_agent,
-			memory=True,
-			long_term_memory = LongTermMemory(
-        		storage=LTMSQLiteStorage(
-            		db_path=f"{work_dir}/memory/ltm_storage.db",
-        		)
-    		),
-			short_term_memory = ShortTermMemory(
-				storage = RAGStorage(
-					type="short_term",
-					path=f"{work_dir}/memory/stm",
-					embedder_config={
-						"provider": "custom",
-						"config": {
-							"embedder": self.embedder
-						}
-    				}
-				),
-			),
-			entity_memory = EntityMemory(
-				storage=RAGStorage(
-					type="short_term",
-					path=f"{work_dir}/memory/etm",
-					embedder_config={
-						"provider": "custom",
-						"config": {
-							"embedder": self.embedder
-						}
-    				}
-				),
-    		),
+			# Try disabling memory
+			# memory=True,
+			memory=False,
+			# long_term_memory = LongTermMemory(
+        	# 	storage=LTMSQLiteStorage(
+            # 		db_path=f"{work_dir}/memory/ltm_storage.db",
+        	# 	)
+    		# ),
+			# short_term_memory = ShortTermMemory(
+			# 	storage = RAGStorage(
+			# 		type="short_term",
+			# 		path=f"{work_dir}/memory/stm",
+			# 	embedder_config=embedder_config
+			# 	),
+			# ),
+			# entity_memory = EntityMemory(
+			# 	storage=RAGStorage(
+			# 		type="short_term",
+			# 		path=f"{work_dir}/memory/etm",
+			# 	embedder_config=embedder_config
+			# 	),
+    		# ),
 		)

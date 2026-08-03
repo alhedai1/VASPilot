@@ -35,6 +35,7 @@ def start_quart():
     os.makedirs(work_dir, exist_ok=True)
     
     # 加载配置
+    config_path = Path(config_path)
     if not config_path.exists():
         print(f"❌ 配置文件不存在: {config_path}")
         return
