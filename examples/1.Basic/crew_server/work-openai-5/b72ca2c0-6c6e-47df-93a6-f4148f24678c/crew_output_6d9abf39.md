@@ -1,0 +1,1 @@
+The Materials Project search for the 2H phase of MoS₂ was not completed: the Crystal Structure Agent invocation failed with a tool configuration error (`Function tools with reasoning_effort are not supported for gpt-5.6-terra in /v1/chat/completions`). No structure file path or Materials Project identifier was obtained.
