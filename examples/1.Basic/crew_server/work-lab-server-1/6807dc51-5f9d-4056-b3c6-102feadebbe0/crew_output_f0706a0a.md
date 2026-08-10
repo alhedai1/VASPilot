@@ -1,0 +1,1 @@
+The crystal structure of MoS2 (2H phase) from Materials Project has the following properties: Space group 146 (P6/mmm), hexagonal crystal system, lattice parameters a = 3.186 Å and c = 14.03 Å, with Mo atoms at (0, 0, 0) and (1/2, 1/2, 1/2), and S atoms at (1/3, 2/3, 1/2) and (2/3, 1/3, 1/2). The structure file is available at: /mnt/data/2H_MoS2_structure.cif.

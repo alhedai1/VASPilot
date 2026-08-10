@@ -38,6 +38,11 @@ class VaspCrew():
 		self.persist_tools["wait_calc_tool"] = WaitCalcTool(mcp_url=self.config['mcp_server']['url'])
 
 		self.agent_tools_dict = {"ask_question_tool":[], "delegate_work_tool":[]}
+
+	def _agent_prompt(self, prompt: str) -> str:
+		"""Apply an optional model-specific control prefix to agent prompts."""
+		prefix = self.config.get("agent_prompt_prefix", "")
+		return f"{prefix.rstrip()}\n{prompt}" if prefix else prompt
 		
 	def _create_tools(self) -> Dict[str, Any]:
 		tool_dict = {}
@@ -74,7 +79,7 @@ class VaspCrew():
 		self.mcp_server.stop()
 
 	def _create_manager_agent(self) -> Agent:
-		manager_goal = self.config['agents']['manager_agent']['goal']
+		manager_goal = self._agent_prompt(self.config['agents']['manager_agent']['goal'])
 		manager_backstory = self.config['agents']['manager_agent']['backstory']
 		fn_call_llm = LLM(**self.llm_config.get('fn_call_llm', None)) if self.llm_config.get('fn_call_llm', None) else None
 		manager = Agent(
@@ -107,7 +112,7 @@ class VaspCrew():
 
 		agent = Agent(
 			role=role,
-			goal=self.config['agents'][agent_name]['goal'],
+			goal=self._agent_prompt(self.config['agents'][agent_name]['goal']),
 			backstory=self.config['agents'][agent_name]['backstory'],
 			llm = LLM(**self.llm_config[agent_name]),
 			tools = tools,

@@ -130,6 +130,14 @@ def search_materials_project(
     try:
         # 构建搜索条件
         search_params = {}
+
+        if "material_id" in search_criteria:
+            material_id = search_criteria["material_id"]
+
+            if isinstance(material_id, str):
+                search_params["material_ids"] = [material_id]
+            elif isinstance(material_id, list):
+                search_params["material_ids"] = material_id
         
         # 化学式搜索
         if "formula" in search_criteria:

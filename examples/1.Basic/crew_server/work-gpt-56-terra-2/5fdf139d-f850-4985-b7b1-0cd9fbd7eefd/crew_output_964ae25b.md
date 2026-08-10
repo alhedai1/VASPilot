@@ -1,0 +1,1 @@
+The structure analysis could not be completed because the structure-analysis tool could not be executed. No verified formula, lattice parameters, space group, or atom count were obtained.

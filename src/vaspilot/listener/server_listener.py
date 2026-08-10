@@ -18,6 +18,8 @@ from abc import ABC, abstractmethod
 
 from pydantic import BaseModel, Field
 
+import ast
+
 class CrewServer(ABC):
 
 
@@ -55,25 +57,69 @@ class ServerListener(BaseEventListener):
         self.exclude_tools = exclude_tools
         self.server = server
 
-    def _format_tool_output(self, tool_output: str) -> Dict[str, Any]:
-        system_prompt = '\nYou ONLY have access to the following tools, and should NEVER make up tools that are not listed here:'
-        tool_output = tool_output.split(system_prompt)[0]
-        tool_output = tool_output.replace("'", '"')
-        tool_output = tool_output.replace("None", "null")
-        tool_output = tool_output.replace("True", "true")
-        tool_output = tool_output.replace("False", "false")
+    # def _format_tool_output(self, tool_output: str) -> Dict[str, Any]:
+    #     system_prompt = '\nYou ONLY have access to the following tools, and should NEVER make up tools that are not listed here:'
+    #     tool_output = tool_output.split(system_prompt)[0]
+    #     tool_output = tool_output.replace("'", '"')
+    #     tool_output = tool_output.replace("None", "null")
+    #     tool_output = tool_output.replace("True", "true")
+    #     tool_output = tool_output.replace("False", "false")
+    #     try:
+    #         # 尝试解析JSON
+    #         return json.loads(tool_output)
+    #     except (json.JSONDecodeError, ValueError) as e:
+    #         # 如果JSON解析失败，返回原始输出的字典格式
+    #         print(f"[WARNING] 工具输出JSON解析失败: {str(e)}")
+    #         print(f"[WARNING] 原始输出: {tool_output[:200]}...")
+    #         return {
+    #             "raw_output": tool_output,
+    #             "parse_error": str(e),
+    #             "error_type": "json_parse_failed"
+    #         }
+
+    def _format_tool_output(self, tool_output: Any) -> Dict[str, Any]:
+        # Some CrewAI tools may already return parsed objects.
+        if isinstance(tool_output, dict):
+            return tool_output
+
+        if isinstance(tool_output, list):
+            return {"data": tool_output}
+
+        text = str(tool_output).strip()
+
+        system_prompt = (
+            "\nYou ONLY have access to the following tools, and should "
+            "NEVER make up tools that are not listed here:"
+        )
+        text = text.split(system_prompt, 1)[0].strip()
+
+        # Delegated agents normally return Markdown/plain text, not JSON.
+        if not text.startswith(("{", "[")):
+            return {"raw_output": text}
+
+        # Try proper JSON first.
         try:
-            # 尝试解析JSON
-            return json.loads(tool_output)
-        except (json.JSONDecodeError, ValueError) as e:
-            # 如果JSON解析失败，返回原始输出的字典格式
-            print(f"[WARNING] 工具输出JSON解析失败: {str(e)}")
-            print(f"[WARNING] 原始输出: {tool_output[:200]}...")
-            return {
-                "raw_output": tool_output,
-                "parse_error": str(e),
-                "error_type": "json_parse_failed"
-            }
+            parsed = json.loads(text)
+        except (json.JSONDecodeError, ValueError):
+            # Some tools return a Python dictionary representation using
+            # single quotes, True, False, and None.
+            try:
+                parsed = ast.literal_eval(text)
+            except (ValueError, SyntaxError) as e:
+                print(f"[WARNING] Tool output parsing failed: {e}")
+                return {
+                    "raw_output": text,
+                    "parse_error": str(e),
+                    "error_type": "structured_output_parse_failed",
+                }
+
+        if isinstance(parsed, dict):
+            return parsed
+
+        if isinstance(parsed, list):
+            return {"data": parsed}
+
+        return {"data": parsed}
 
     def _format_agent_input(self, agent_input: str) -> str:
         system_prompt = "\n\n# Useful context: "

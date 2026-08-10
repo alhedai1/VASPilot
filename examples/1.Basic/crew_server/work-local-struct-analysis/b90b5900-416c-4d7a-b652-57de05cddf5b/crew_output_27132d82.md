@@ -1,0 +1,1 @@
+{"crystal_structure": "C:/Users/iAI/Desktop/VASPilot/VASPilot/examples/1.Basic/mcp/downloads\\mp-990083_MoS2.vasp", "task_related_analysis_results": null, "task_execution_status": "completed"}
