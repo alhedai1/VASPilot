@@ -211,12 +211,12 @@ class ServerListener(BaseEventListener):
                                     "timestamp": datetime.now().isoformat()
                                 }
                             )
-                            print(f"[INFO] 成功记录工具输出: {event.tool_name}")
+                            print(f"[INFO] Successfully logged tool output: {event.tool_name}")
                         except Exception as e:
                             # 如果所有处理都失败，至少记录原始输出
-                            print(f"[ERROR] 处理工具输出时发生错误: {str(e)}")
-                            print(f"[ERROR] 工具名称: {event.tool_name}")
-                            print(f"[ERROR] 原始输出: {str(event.output)[:200]}...")
+                            print(f"[ERROR] An error occurred while processing the tool output.: {str(e)}")
+                            print(f"[ERROR] Tool name: {event.tool_name}")
+                            print(f"[ERROR] Raw output: {str(event.output)[:200]}...")
                             
                             # 创建一个安全的错误输出记录
                             fallback_output = {
