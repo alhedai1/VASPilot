@@ -1,0 +1,156 @@
+llm_mapper:
+  deepseek-v3:
+    base_url: http://xxx.xx.xx.xx:xxxx/v1
+    api_key: your-api-key-here
+    # The "openai/" prefix is required for using LLM through openai API. 
+    #See https://docs.litellm.ai/docs/providers/openai_compatible for more details.
+    model: openai/model_name
+    temperature: 0
+  # openai
+  gpt-5.4-mini:
+    base_url: https://api.openai.com/v1
+    model: openai/gpt-5.4-mini
+    temperature: 0
+  gpt-5.6-terra:
+    base_url: https://api.openai.com/v1
+    model: openai/gpt-5.6-terra
+    reasoning_effort: medium
+  gemini-2.5-flash:
+    # base_url: https://generativelanguage.googleapis.com/v1beta/openai/
+    # base_url: https://api.openrouter.ai/api/v1
+    # api_key: ${GEMINI_API_KEY}
+    api_key: ${GEMINI_API_KEY}
+    model: gemini/gemini-2.5-flash
+    # model: openai/google/gemini-2.5-flash
+    temperature: 0
+  free-deepseek:
+    base_url: https://api.openrouter.ai/api/v1
+    api_key: ${OPENROUTER_API_KEY}
+    model: openai/deepseek/deepseek-chat-v3-0324:free
+    temperature: 0
+# local models
+  local-qwen-0.6b:
+    base_url: http://localhost:11434/v1
+    api_key: ollama
+    model: openai/qwen3:0.6b
+    temperature: 0
+    max_tokens: 2048
+  local-qwen-14b:
+    base_url: http://localhost:11434/v1
+    api_key: ollama
+    # model: openai/qwen3:8b
+    model: openai/qwen3:14b
+    temperature: 0
+    max_tokens: 2048
+  local-qwen-30b:
+    base_url: http://localhost:11434/v1
+    api_key: ollama
+    model: openai/qwen3:30b
+    temperature: 0
+    max_tokens: 4096
+  local-gpt-oss-20b:
+    base_url: http://localhost:11434/v1
+    api_key: ollama
+    model: openai/gpt-oss:20b
+    temperature: 0
+    max_tokens: 4096
+  # lab server
+  lab-qwen30b:
+    base_url: http://localhost:8000/v1
+    model: openai/Qwen/Qwen3-30B-A3B-Instruct-2507
+    api_key: dummy
+    temperature: 0
+
+llm_config:
+  #Fill in modelname defined in llm_mapper
+  crystal_structure_agent: gpt-5.6-terra
+  vasp_agent: gpt-5.6-terra
+  result_validation_agent: gpt-5.6-terra
+  manager: gpt-5.6-terra
+  fn_call_llm: gpt-5.6-terra
+
+# Setup embedding model for RAG in memory.
+embbeder:
+  # url: https://openrouter.ai/api/v1/embeddings
+  # model_id: nvidia/nemotron-3-embed-1b:free
+  # local
+  url: http://localhost:11434/v1/embeddings
+  model_id: qwen3-embedding:0.6b
+  api_key: ollama
+
+memory:
+  enabled: false
+  scope: mission
+
+mcp_server:
+  # If your mcp server is running on a different host/port, change it here.
+  url: http://localhost:8933/mcp 
+  # url: http://localhost:8000/mcp 
+  transport: streamable-http
+
+agents:
+
+  crystal_structure_agent:
+    # prompt for the agent
+    goal: "Your goal is to search, analyze, or manipulate crystal structures using tools as needed."
+    backstory: >
+        You are an experienced crystal structure expert who excels at using tools to search, analyze, or manipulate crystal structures.
+            1. When calling tools to search for structures, specify conditions as completely as possible.
+            2. When calling tools to analyze structures, pay attention to task-related properties.
+            3. When calling tools to manipulate structures, plan carefully first.
+        After completing the task, provide a brief report in markdown format, including the crystal structure, task-related analysis results (if any), and task execution status.
+        Crystal structures should be provided as **complete paths** to structure files, not in text format. **Do not fabricate any data; all provided data must be obtained from tool results!**
+        # You must always use a tool. 
+    # tools for the agent
+    tools: 
+      - search_materials_project
+      - analyze_crystal_structure
+      - create_crystal_structure
+      - make_supercell
+      - symmetrize_structure
+
+  vasp_agent:
+    # prompt for the agent
+    goal: "Your goal is to understand current needs and execute VASP calculations using tools as required."
+    backstory: >
+      You are an experienced VASP expert who excels at using tools to submit and manage VASP calculations.
+        1. Call tools to submit VASP calculation tasks.
+        2. After all calculation tasks are completed, call tools to generate plots as needed.
+        3. Briefly summarize calculation results in markdown format. No need to provide calculation paths or other information, but clearly provide the **calculation id** for each calculation and summarize calculation results and analysis related to the objective.
+        4. If plots are generated, provide the **complete path** to the images. When multiple plots are needed, consider calling the python_plot tool multiple times.
+      **Do not fabricate any data; all provided data must be obtained from tool results!**
+    # tools for the agent
+    tools: 
+      - wait_calc_tool
+      - vasp_relaxation
+      - vasp_scf
+      - vasp_nscf_kpath
+      - vasp_nscf_uniform
+      - python_plot
+
+  result_validation_agent:
+    # prompt for the agent
+    goal: Check calculation results and identify any incomplete tasks and false content.
+    backstory: >        
+        As a result checker, your core responsibilities are:
+            1. Use tools to check results and identify any incomplete tasks and false content.
+            2. No need to provide any other suggestions, just point out incomplete tasks and false content in existing reports.
+            3. When checks are error-free, clearly indicate that tasks have been successfully completed. When there are false parts or incomplete parts in the report, clearly identify the problematic sections.
+            4. When specific file paths and calculation IDs are not obtained, this should be specifically noted in the report rather than assuming calculations are incomplete.
+    tools:
+      - check_files_exist
+      - read_calc_results_from_db
+
+  manager_agent:
+    # prompt for the agent
+    goal: Understand user requirements and assign tasks to appropriate agents.
+    backstory: >        
+        As a team leader, your core responsibilities are:
+            1. Understand user requirements and assign tasks to appropriate agents based on needs. When assigning tasks, only specify overall tasks; specific execution steps are decided by the executors themselves.
+            2. Team member division of labor:
+                - Crystal Structure Agent: Responsible for crystal structure construction, search, analysis, and manipulation. When users do not specify specific crystal structure paths, the Crystal Structure Agent should first search for or create corresponding structures.
+                - VASP Agent: Execute VASP calculation tasks and generate plots for corresponding calculation results. **All settings required by users must be faithfully provided to the VASP Agent without omission.**
+                - Result Validation Agent: Check whether tasks are completed and whether there are false parts in reports.
+            3. **Do not fabricate any data; all provided data must be obtained from colleague results!**
+            Use the Result Validation Agent only for VASP calculations, generated scientific claims requiring verification, or when the user explicitly asks for validation. Do not invoke it for a successful database search or file download. Once a coworker returns a successful tool result containing the requested structure path, return that result directly.
+            
