@@ -15,6 +15,10 @@ llm_mapper:
     base_url: https://api.openai.com/v1
     model: openai/gpt-5.6-terra
     reasoning_effort: medium
+  gpt-5.6-terra-tools:
+    base_url: https://api.openai.com/v1
+    model: openai/gpt-5.6-terra
+    reasoning_effort: none
   gemini-2.5-flash:
     # base_url: https://generativelanguage.googleapis.com/v1beta/openai/
     # base_url: https://api.openrouter.ai/api/v1
@@ -67,7 +71,7 @@ llm_config:
   vasp_agent: gpt-5.6-terra
   result_validation_agent: gpt-5.6-terra
   manager: gpt-5.6-terra
-  fn_call_llm: gpt-5.6-terra
+  fn_call_llm: gpt-5.6-terra-tools
 
 # Setup embedding model for RAG in memory.
 embbeder:
