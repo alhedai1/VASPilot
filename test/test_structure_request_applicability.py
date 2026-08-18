@@ -85,6 +85,87 @@ class ApplicabilityTests(unittest.TestCase):
             classifier.classify("calculate band structure").status,
             ApplicabilityStatus.NOT_PURE,
         )
+
+    def test_ungroundable_retrieval_common_names_require_clarification(self):
+        response = '{"status":"not_pure","evidence":null,"clarification":null}'
+        classifier = StructureRequestApplicabilityClassifier(lambda _m: response)
+        for text in (
+            "get the structure of water",
+            "get the structure of sodium chloride",
+            "retrieve the crystal structure of an unsupported common material name",
+        ):
+            with self.subTest(text=text):
+                result = classifier.classify(text)
+                self.assertEqual(
+                    result.status, ApplicabilityStatus.CLARIFICATION_REQUIRED
+                )
+                self.assertIn("isolated molecule", result.clarification)
+                self.assertIn("crystalline", result.clarification)
+
+    def test_erroneous_pure_common_name_is_defensively_changed_to_clarification(self):
+        response = json.dumps(
+            {
+                "status": "pure_mp_structure",
+                "evidence": {
+                    "retrieval_intent": "get",
+                    "material_anchor": "water",
+                },
+                "clarification": None,
+            }
+        )
+        result = StructureRequestApplicabilityClassifier(lambda _m: response).classify(
+            "get the structure of water"
+        )
+        self.assertEqual(result.status, ApplicabilityStatus.CLARIFICATION_REQUIRED)
+        self.assertIn("isolated molecule", result.clarification)
+
+    def test_weak_llm_clarification_is_replaced_for_ambiguous_retrieval(self):
+        response = json.dumps(
+            {
+                "status": "clarification_required",
+                "evidence": None,
+                "clarification": "Please provide a formula.",
+            }
+        )
+        result = StructureRequestApplicabilityClassifier(lambda _m: response).classify(
+            "get the structure of water"
+        )
+        self.assertIn("isolated molecule", result.clarification)
+        self.assertIn("crystalline material/phase", result.clarification)
+
+    def test_formula_retrieval_is_not_changed_by_fallback(self):
+        pure = pure_json("search Materials Project for H2O structures")
+        result = StructureRequestApplicabilityClassifier(lambda _m: pure).classify(
+            "search Materials Project for H2O structures"
+        )
+        self.assertEqual(result.status, ApplicabilityStatus.PURE_MP_STRUCTURE)
+
+    def test_explicit_mp_formula_query_overrides_unnecessary_llm_clarification(self):
+        response = json.dumps(
+            {
+                "status": "clarification_required",
+                "evidence": None,
+                "clarification": "Please provide a formula.",
+            }
+        )
+        result = StructureRequestApplicabilityClassifier(lambda _m: response).classify(
+            "search Materials Project for H2O structures"
+        )
+        self.assertEqual(result.status, ApplicabilityStatus.PURE_MP_STRUCTURE)
+        self.assertEqual(result.evidence.material_anchor, "H2O")
+
+    def test_creation_explanation_and_band_work_are_excluded_from_fallback(self):
+        response = '{"status":"not_pure","evidence":null,"clarification":null}'
+        classifier = StructureRequestApplicabilityClassifier(lambda _m: response)
+        for text in (
+            "create an isolated H2O molecule",
+            "calculate the band structure from vasprun.xml",
+            "explain the structure of water",
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(
+                    classifier.classify(text).status, ApplicabilityStatus.NOT_PURE
+                )
         self.assertEqual(
             classifier.classify("analyze C:/data/structure.cif").status,
             ApplicabilityStatus.NOT_PURE,

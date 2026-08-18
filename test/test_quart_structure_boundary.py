@@ -13,6 +13,10 @@ from vaspilot.server.quart_server.quart_server import (
     QuartCrewServer,
     _structure_resolver_from_environment,
 )
+from vaspilot.tools.structure_application_boundary import StructureApplicationBoundary
+from vaspilot.tools.structure_request_applicability import (
+    StructureRequestApplicabilityClassifier,
+)
 
 
 class FakeBoundary:
@@ -103,6 +107,32 @@ class QuartBoundaryTests(unittest.TestCase):
             self.assertFalse(container["crew_constructed"])
             self.assertFalse(container["crew_kickoff_called"])
             self.assertEqual(server.generator.crew_calls, 0)
+
+    def test_ambiguous_retrieval_cannot_reach_crew_or_structure_creation(self):
+        response = '{"status":"not_pure","evidence":null,"clarification":null}'
+        classifier = StructureRequestApplicabilityClassifier(lambda _m: response)
+
+        class ForbiddenCoordinator:
+            calls = 0
+
+            def handle_structure_request(self, *_args):
+                self.calls += 1
+                raise AssertionError("MP resolver path must not run")
+
+        with tempfile.TemporaryDirectory() as td:
+            coordinator = ForbiddenCoordinator()
+            boundary = StructureApplicationBoundary(classifier, coordinator)
+            server = bare_server(td, boundary)
+            container = {}
+            server._run_crew_kickoff_thread(
+                td, "get the structure of water", container, "water"
+            )
+            self.assertTrue(container["result"].startswith("clarification_required:"))
+            self.assertIn("isolated molecule", container["result"])
+            self.assertFalse(container["crew_constructed"])
+            self.assertFalse(container["crew_kickoff_called"])
+            self.assertEqual(server.generator.crew_calls, 0)
+            self.assertEqual(coordinator.calls, 0)
 
     def test_intercepted_scientific_outcomes_are_stored_completed(self):
         for rendered in (

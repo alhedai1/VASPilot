@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import json
+import re
 from enum import Enum
 from typing import Any, Callable, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pymatgen.core import Composition, Element
 
 
 APPLICABILITY_POLICY_VERSION = "structure-request-applicability-v1"
@@ -81,7 +83,42 @@ The retrieval quote must demonstrate search/retrieve/list/select/show/find/downl
 intent. The anchor must identify a formula, material name, MP ID, phase, prototype,
 or explicit Materials Project source. For other statuses evidence must be null.
 Use clarification_required only when the final requested action is genuinely unclear.
+If retrieval intent is clear but the material expression is a common name or is
+ambiguous between a molecule and a crystalline phase, use clarification_required.
+Ask for a formula, Materials Project ID, or an explicit crystalline phase; never
+translate a common name into a formula.
 """
+
+
+_RETRIEVAL_INTENT = re.compile(
+    r"\b(?:get|retrieve|download|find|search|list|show|fetch|look\s+up)\b",
+    re.IGNORECASE,
+)
+_STRUCTURE_OBJECT = re.compile(
+    r"\b(?:crystal(?:line)?\s+structures?|structures?|crystalline\s+phases?|"
+    r"polymorphs?)\b",
+    re.IGNORECASE,
+)
+_NON_RETRIEVAL_ACTION = re.compile(
+    r"\b(?:create|build|generate|make|explain|calculate|compute|relax|"
+    r"optimi[sz]e|analy[sz]e|plot|simulate)\b|"
+    r"\b(?:band\s+structure|density\s+of\s+states|vasprun\.xml|POSCAR|"
+    r"CONTCAR|structure_file)\b",
+    re.IGNORECASE,
+)
+_MP_ID = re.compile(r"\bmp-\d+\b", re.IGNORECASE)
+_MP_SOURCE = re.compile(r"\b(?:Materials\s+Project|MP)\b", re.IGNORECASE)
+_FORMULA_TOKEN = re.compile(r"(?<![A-Za-z0-9])(?:[A-Z][a-z]?\d*){1,8}(?![A-Za-z0-9])")
+_CHEMICAL_SYSTEM = re.compile(
+    r"(?<![A-Za-z0-9])([A-Z][a-z]?(?:-[A-Z][a-z]?)+)(?![A-Za-z0-9])"
+)
+
+
+AMBIGUOUS_RETRIEVAL_CLARIFICATION = (
+    "Please clarify whether you want an isolated molecule or a crystalline "
+    "material/phase, and provide a chemical formula, Materials Project ID, "
+    "or explicit Materials Project crystalline-phase query."
+)
 
 
 def applicability_classifier_from_config(
@@ -131,10 +168,29 @@ class StructureRequestApplicabilityClassifier:
                 envelope = _ClassifierEnvelope.model_validate(json.loads(raw))
                 if envelope.status == ApplicabilityStatus.CLASSIFICATION_ERROR:
                     raise ValueError("LLM cannot return classification_error")
+                explicit_evidence = self._explicit_mp_retrieval_evidence(source_text)
+                if explicit_evidence is not None:
+                    return StructureApplicabilityResult(
+                        status=ApplicabilityStatus.PURE_MP_STRUCTURE,
+                        evidence=explicit_evidence,
+                        retry_count=attempt,
+                    )
+                if self._is_ungroundable_retrieval(source_text):
+                    return StructureApplicabilityResult(
+                        status=ApplicabilityStatus.CLARIFICATION_REQUIRED,
+                        clarification=AMBIGUOUS_RETRIEVAL_CLARIFICATION,
+                        retry_count=attempt,
+                    )
                 if envelope.status == ApplicabilityStatus.PURE_MP_STRUCTURE:
                     if envelope.evidence is None:
                         raise ValueError("pure MP classification requires evidence")
                     self._validate_evidence(source_text, envelope.evidence)
+                    if not self._has_schema_groundable_material(source_text):
+                        return StructureApplicabilityResult(
+                            status=ApplicabilityStatus.CLARIFICATION_REQUIRED,
+                            clarification=AMBIGUOUS_RETRIEVAL_CLARIFICATION,
+                            retry_count=attempt,
+                        )
                 elif envelope.evidence is not None:
                     raise ValueError("only pure MP classification may include evidence")
                 return StructureApplicabilityResult(
@@ -171,3 +227,57 @@ class StructureRequestApplicabilityClassifier:
             raise ValueError("material anchor evidence must be exact source text")
         if evidence.retrieval_intent == evidence.material_anchor:
             raise ValueError("retrieval intent and material anchor evidence must be distinct")
+
+    @classmethod
+    def _is_ungroundable_retrieval(cls, source_text: str) -> bool:
+        if _NON_RETRIEVAL_ACTION.search(source_text):
+            return False
+        if not _RETRIEVAL_INTENT.search(source_text) or not _STRUCTURE_OBJECT.search(source_text):
+            return False
+        return not cls._has_schema_groundable_material(source_text)
+
+    @staticmethod
+    def _has_schema_groundable_material(source_text: str) -> bool:
+        if _MP_ID.search(source_text):
+            return True
+        for match in _CHEMICAL_SYSTEM.finditer(source_text):
+            try:
+                if all(Element.is_valid_symbol(part) for part in match.group(1).split("-")):
+                    return True
+            except ValueError:
+                continue
+        for match in _FORMULA_TOKEN.finditer(source_text):
+            token = match.group(0)
+            try:
+                composition = Composition(token)
+                if composition.num_atoms > 0 and all(
+                    Element.is_valid_symbol(str(element)) for element in composition.elements
+                ):
+                    return True
+            except (TypeError, ValueError):
+                continue
+        return False
+
+    @classmethod
+    def _explicit_mp_retrieval_evidence(
+        cls, source_text: str
+    ) -> Optional[ApplicabilityEvidence]:
+        intent = _RETRIEVAL_INTENT.search(source_text)
+        if (
+            intent is None
+            or _MP_SOURCE.search(source_text) is None
+            or _NON_RETRIEVAL_ACTION.search(source_text) is not None
+            or not cls._has_schema_groundable_material(source_text)
+        ):
+            return None
+        anchor = _MP_ID.search(source_text)
+        if anchor is None:
+            anchor = _CHEMICAL_SYSTEM.search(source_text)
+        if anchor is None:
+            anchor = _FORMULA_TOKEN.search(source_text)
+        if anchor is None:
+            return None
+        return ApplicabilityEvidence(
+            retrieval_intent=intent.group(0),
+            material_anchor=anchor.group(0),
+        )
