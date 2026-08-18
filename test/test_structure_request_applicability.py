@@ -20,16 +20,22 @@ PURE_EXAMPLES = (
 )
 
 NOT_PURE_EXAMPLES = (
-    "calculate the band structure of MoS2",
     "calculate the band structure from vasprun.xml",
-    "relax 2H-MoS2 using VASP",
-    "run a geometry optimization for mp-2815",
     "analyze structure_file: C:/data/sample.cif",
     "make a 2x2x2 supercell from POSCAR",
     "create an FCC aluminum structure",
     "explain what a crystal structure is",
     "search the literature for MoS2",
     "plot the density of states",
+)
+
+MIXED_EXAMPLES = (
+    "calculate the band structure of MoS2",
+    "relax 2H-MoS2 using VASP",
+    "run a geometry optimization for mp-2815",
+    "run a DOS calculation for mp-2815",
+    "optimize rutile TiO2",
+    "make a supercell of the MP structure mp-2815",
 )
 
 
@@ -60,6 +66,13 @@ class SequenceLLM:
 
 
 class ApplicabilityTests(unittest.TestCase):
+    def test_legacy_not_pure_payload_normalizes_to_local(self):
+        classifier = StructureRequestApplicabilityClassifier(
+            lambda _messages: json.dumps({"status": "not_pure", "evidence": None})
+        )
+        result = classifier.classify("explain band structures")
+        self.assertEqual(result.status, ApplicabilityStatus.LOCAL_OR_UNRELATED)
+
     def test_required_positive_examples(self):
         for text in PURE_EXAMPLES:
             with self.subTest(text=text):
@@ -77,6 +90,27 @@ class ApplicabilityTests(unittest.TestCase):
                     lambda _messages: response
                 ).classify(text)
                 self.assertEqual(result.status, ApplicabilityStatus.NOT_PURE)
+
+    def test_required_mixed_examples(self):
+        for text in MIXED_EXAMPLES:
+            with self.subTest(text=text):
+                classifier = StructureRequestApplicabilityClassifier(
+                    lambda _messages: json.dumps(
+                        {"status": "local_or_unrelated", "evidence": None}
+                    )
+                )
+                result = classifier.classify(text)
+                self.assertEqual(result.status, ApplicabilityStatus.MIXED_MP_STRUCTURE)
+                self.assertIsNotNone(result.evidence)
+
+    def test_multiple_structure_workflow_requires_clarification(self):
+        classifier = StructureRequestApplicabilityClassifier(
+            lambda _messages: json.dumps(
+                {"status": "local_or_unrelated", "evidence": None}
+            )
+        )
+        result = classifier.classify("compare multiple MoS2 structures using VASP")
+        self.assertEqual(result.status, ApplicabilityStatus.CLARIFICATION_REQUIRED)
 
     def test_band_structure_word_and_local_path_are_not_intercepted(self):
         response = '{"status":"not_pure","evidence":null,"clarification":null}'

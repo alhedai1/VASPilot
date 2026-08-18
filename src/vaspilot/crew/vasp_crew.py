@@ -13,7 +13,8 @@ from ..tools.json_rag_tool import JsonApproxSearch, JsonStrictSearch
 from crewai_tools import RagTool
 from crewai.knowledge.source.json_knowledge_source import JSONKnowledgeSource
 import yaml
-from typing import Dict, Any
+from typing import Dict, Any, Optional, FrozenSet
+from ..tools.structure_application_boundary import ResolvedStructureContext
 from .embedding import LocalAPIEmbedder
 from .local_llm import LocalLLM
 from crewai_tools import MCPServerAdapter
@@ -93,13 +94,24 @@ class VaspCrew():
 		)
 		return manager
 
-	def _create_agent(self, agent_name: str, tool_dict: dict) -> Agent:
+	def _allowed_tool_names(
+		self, agent_name: str, forbidden_tools: FrozenSet[str] = frozenset()
+	) -> list[str]:
+		configured = self.config['agents'][agent_name].get('tools', None) or []
+		return [name for name in configured if name not in forbidden_tools]
+
+	def _create_agent(
+		self,
+		agent_name: str,
+		tool_dict: dict,
+		forbidden_tools: FrozenSet[str] = frozenset(),
+	) -> Agent:
 		if not self.config['agents'][agent_name]:
 			raise ValueError(f"Agent {agent_name} not found in config")
 		
 		tools = []
 		if self.config['agents'][agent_name].get('tools', None):
-			for tool_name in self.config['agents'][agent_name]['tools']:
+			for tool_name in self._allowed_tool_names(agent_name, forbidden_tools):
 				if not tool_name in ["ask_question_tool", "delegate_work_tool"]:
 					tools.append(tool_dict[tool_name])
 		
@@ -123,16 +135,29 @@ class VaspCrew():
 
 		return agent
 
-	def _create_working_agents(self,tool_dict: dict) -> dict[str, Agent]:
+	def _create_working_agents(
+		self, tool_dict: dict, forbidden_tools: FrozenSet[str] = frozenset()
+	) -> dict[str, Agent]:
 		agents_dict = {}
 		for agent_name in self.config['agents'].keys():
 			if agent_name == 'manager_agent':
 				continue
-			agents_dict[agent_name] = self._create_agent(agent_name, tool_dict)
+			agents_dict[agent_name] = self._create_agent(
+				agent_name, tool_dict, forbidden_tools
+			)
 		return agents_dict
 
-	def crew(self, work_dir: str) -> Crew:
+	def crew(
+		self,
+		work_dir: str,
+		resolved_structure_context: Optional[ResolvedStructureContext] = None,
+		forbidden_tools: FrozenSet[str] = frozenset(),
+	) -> Crew:
 		"""Creates the VASPilot crew"""
+		if resolved_structure_context is not None and not isinstance(
+			resolved_structure_context, ResolvedStructureContext
+		):
+			raise TypeError("resolved_structure_context must be validated and frozen")
 		if not os.path.exists(f"{work_dir}/memory/"):
 			os.makedirs(f"{work_dir}/memory/")
 		embedder_config = {
@@ -145,7 +170,7 @@ class VaspCrew():
 			},
 		}
 		tool_dict = self._create_tools()
-		agent_dict = self._create_working_agents(tool_dict)
+		agent_dict = self._create_working_agents(tool_dict, forbidden_tools)
 		manager_agent = self._create_manager_agent()
 		agent_dict = self._inject_agent_tools(agent_dict)
 		working_agents = list(agent_dict.values())

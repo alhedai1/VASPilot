@@ -38,7 +38,7 @@ from ...tools.structure_request_coordinator import (
     InMemoryInvocationStore,
     StructureRequestCoordinator,
 )
-from ...tools.structure_request_parser import parser_from_config
+from ...tools.structure_request_parser import ParserMode, parser_from_config
 from ...tools.structure_resolver import StructureResolver
 from crewai import Task
 from fastmcp.client import Client
@@ -130,6 +130,9 @@ class QuartCrewServer(CrewServer):
     def _create_structure_boundary(self) -> StructureApplicationBoundary:
         classifier = applicability_classifier_from_config(self.config)
         parser = parser_from_config(self.config)
+        mixed_parser = parser_from_config(
+            self.config, mode=ParserMode.MIXED_SINGLE_INPUT
+        )
         store = InMemoryInvocationStore()
 
         coordinator = StructureRequestCoordinator(
@@ -137,7 +140,17 @@ class QuartCrewServer(CrewServer):
             resolver_factory=_structure_resolver_from_environment,
             invocation_store=store,
         )
-        return StructureApplicationBoundary(classifier, coordinator, store)
+        mixed_coordinator = StructureRequestCoordinator(
+            parser=mixed_parser,
+            resolver_factory=_structure_resolver_from_environment,
+            invocation_store=store,
+        )
+        return StructureApplicationBoundary(
+            classifier=classifier,
+            coordinator=coordinator,
+            mixed_coordinator=mixed_coordinator,
+            invocation_store=store,
+        )
 
     async def _init_db(self):
         """异步初始化数据库"""
@@ -897,7 +910,21 @@ class QuartCrewServer(CrewServer):
                 return
 
             self.system_log("Initializing crew...")
-            crew = self.generator.crew(local_dir)
+            resolved_context = getattr(boundary_result, "resolved_structure", None)
+            if resolved_context is not None:
+                forbidden_tools = frozenset(
+                    {"search_materials_project", "create_crystal_structure"}
+                )
+                crew = self.generator.crew(
+                    local_dir,
+                    resolved_structure_context=resolved_context,
+                    forbidden_tools=forbidden_tools,
+                )
+                task_description = self._mixed_task_description(
+                    task_description, resolved_context
+                )
+            else:
+                crew = self.generator.crew(local_dir)
             result_container['crew_constructed'] = True
             # 注册映射关系（先注册再记录日志，避免未映射时fingerprint为None）
             self._register_mapping(conversation_id, crew.fingerprint.uuid_str)
@@ -919,7 +946,15 @@ class QuartCrewServer(CrewServer):
             
             self.system_log("Starting task execution...", crew.fingerprint.uuid_str)
             result_container['crew_kickoff_called'] = True
-            result_container['result'] = crew.kickoff()
+            downstream_result = crew.kickoff()
+            if resolved_context is not None:
+                result_container['result'] = (
+                    self._authoritative_structure_result(resolved_context)
+                    + "\n\nDownstream result:\n"
+                    + str(downstream_result)
+                )
+            else:
+                result_container['result'] = downstream_result
 
 
             self.system_log("Task completed!", crew.fingerprint.uuid_str)
@@ -931,6 +966,33 @@ class QuartCrewServer(CrewServer):
                 self._crew_thread_ids.pop(conversation_id, None)
             except Exception:
                 pass
+
+    @staticmethod
+    def _mixed_task_description(user_text, context) -> str:
+        return (
+            "[APPLICATION-OWNED AUTHORITATIVE STRUCTURE CONTEXT]\n"
+            f"material_id: {context.material_id}\n"
+            f"structure_path: {context.structure_path}\n"
+            f"formula: {context.formula}\n"
+            f"resolver_status: {context.resolver_status.value}\n"
+            f"resolver_policy_version: {context.resolver_policy_version}\n"
+            f"semantic_label: {context.semantic_label or 'none'}\n"
+            f"semantic_policy_version: {context.semantic_policy_version or 'none'}\n"
+            "This initial structure is authoritative. Do not search for, create, "
+            "or substitute another Materials Project structure.\n"
+            "[END APPLICATION-OWNED CONTEXT]\n\n"
+            "[USER REQUEST]\n"
+            + user_text
+        )
+
+    @staticmethod
+    def _authoritative_structure_result(context) -> str:
+        return (
+            "authoritative_structure: selected\n"
+            f"material_id: {context.material_id}\n"
+            f"structure_path: {context.structure_path}\n"
+            f"resolver_policy_version: {context.resolver_policy_version}"
+        )
 
     def _inject_exception_into_thread(self, thread_id: int, exc_type=SystemExit) -> bool:
         """向目标线程异步注入异常以尝试强制结束。
