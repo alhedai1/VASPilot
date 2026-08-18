@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import OrderedDict
+import os
 from pathlib import Path
 from threading import Event, Lock
 from typing import Callable, Optional, Protocol, TypeVar
@@ -101,7 +102,12 @@ T = TypeVar("T")
 
 
 class InvocationStore(Protocol):
-    def execute_once(self, invocation_key: str, operation: Callable[[], T]) -> tuple[T, bool]:
+    def execute_once(
+        self,
+        invocation_key: str,
+        operation: Callable[[], T],
+        binding: object = None,
+    ) -> tuple[T, bool]:
         """Return (value, was_cached), executing operation once per completed key."""
 
 
@@ -115,10 +121,21 @@ class InMemoryInvocationStore:
         self._lock = Lock()
         self._completed: OrderedDict[str, object] = OrderedDict()
         self._in_flight: dict[str, Event] = {}
+        self._bindings: dict[str, object] = {}
 
-    def execute_once(self, invocation_key: str, operation: Callable[[], T]) -> tuple[T, bool]:
+    def execute_once(
+        self,
+        invocation_key: str,
+        operation: Callable[[], T],
+        binding: object = None,
+    ) -> tuple[T, bool]:
         while True:
             with self._lock:
+                if invocation_key in self._bindings and self._bindings[invocation_key] != binding:
+                    raise ValueError(
+                        "invocation_key is already bound to different source text "
+                        "or output directory"
+                    )
                 if invocation_key in self._completed:
                     value = self._completed.pop(invocation_key)
                     self._completed[invocation_key] = value
@@ -127,6 +144,7 @@ class InMemoryInvocationStore:
                 if event is None:
                     event = Event()
                     self._in_flight[invocation_key] = event
+                    self._bindings[invocation_key] = binding
                     owner = True
                 else:
                     owner = False
@@ -139,13 +157,15 @@ class InMemoryInvocationStore:
         except BaseException:
             with self._lock:
                 self._in_flight.pop(invocation_key).set()
+                self._bindings.pop(invocation_key, None)
             raise
 
         with self._lock:
             self._completed[invocation_key] = value
             self._completed.move_to_end(invocation_key)
             while len(self._completed) > self.capacity:
-                self._completed.popitem(last=False)
+                evicted_key, _ = self._completed.popitem(last=False)
+                self._bindings.pop(evicted_key, None)
             self._in_flight.pop(invocation_key).set()
         return value, False
 
@@ -230,6 +250,7 @@ class StructureRequestCoordinator:
         if not invocation_key.strip():
             raise ValueError("invocation_key must not be blank")
         output_path = Path(output_directory)
+        normalized_output = os.path.normcase(str(output_path.resolve(strict=False)))
 
         def execute() -> StructureCoordinatorResult:
             parse = self.parser.parse(source_text)
@@ -241,7 +262,11 @@ class StructureRequestCoordinator:
             rendered = self.renderer(parse, resolution)
             return _coordinator_result(invocation_key, parse, resolution, rendered)
 
-        result, was_cached = self.invocation_store.execute_once(invocation_key, execute)
+        result, was_cached = self.invocation_store.execute_once(
+            invocation_key,
+            execute,
+            binding=(source_text, normalized_output),
+        )
         if was_cached:
             return result.model_copy(update={"returned_from_store": True})
         return result

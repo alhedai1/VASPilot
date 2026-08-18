@@ -32,8 +32,25 @@ current_dir = Path(__file__).parent  # quart_server/
 # 导入项目模块
 from ...listener.server_listener import CrewServer, ServerListener
 from ...crew import VaspCrew
+from ...tools.structure_application_boundary import StructureApplicationBoundary
+from ...tools.structure_request_applicability import applicability_classifier_from_config
+from ...tools.structure_request_coordinator import (
+    InMemoryInvocationStore,
+    StructureRequestCoordinator,
+)
+from ...tools.structure_request_parser import parser_from_config
+from ...tools.structure_resolver import StructureResolver
 from crewai import Task
 from fastmcp.client import Client
+
+
+def _structure_resolver_from_environment(output_directory: Path) -> StructureResolver:
+    api_key = os.environ.get("MP_API_KEY", "").strip()
+    if not api_key:
+        raise RuntimeError(
+            "MP_API_KEY is required for pure Materials Project structure requests"
+        )
+    return StructureResolver(api_key=api_key, output_dir=output_directory)
 
 
 class TaskStatus(Enum):
@@ -60,7 +77,8 @@ class QuartCrewServer(CrewServer):
     def __init__(self, crew_config: Dict[str, Any], title: str = "VASPilot Async Server", 
                  work_dir: str = ".", db_path: Optional[str] = None, 
                  allow_path: Optional[str] = None, max_concurrent_tasks: int = 3,
-                 max_queue_size: int = 10):
+                 max_queue_size: int = 10,
+                 structure_boundary: Optional[StructureApplicationBoundary] = None):
         super().__init__()
         self.title = title
         self.config = crew_config
@@ -92,6 +110,7 @@ class QuartCrewServer(CrewServer):
         os.makedirs(self.upload_dir, exist_ok=True)
         
         self.generator = VaspCrew(self.config)
+        self.structure_boundary = structure_boundary or self._create_structure_boundary()
         self.current_logger = ServerListener(self)
         # 并行任务下映射关系：conversation_id <-> crew_fingerprint
         self._conversation_to_fingerprint: Dict[str, str] = {}
@@ -99,14 +118,26 @@ class QuartCrewServer(CrewServer):
         self._mapping_lock = threading.Lock()
         self._running_threads: Dict[str, threading.Thread] = {}
         self._crew_thread_ids: Dict[str, int] = {}
-        
+
         # 日志基础设施（启动时在事件循环内初始化）
         self._log_queue = None
         self._log_worker_task = None
         self._event_loop = None
-        
+
         # 设置路由
         self._setup_routes()
+
+    def _create_structure_boundary(self) -> StructureApplicationBoundary:
+        classifier = applicability_classifier_from_config(self.config)
+        parser = parser_from_config(self.config)
+        store = InMemoryInvocationStore()
+
+        coordinator = StructureRequestCoordinator(
+            parser=parser,
+            resolver_factory=_structure_resolver_from_environment,
+            invocation_store=store,
+        )
+        return StructureApplicationBoundary(classifier, coordinator, store)
 
     async def _init_db(self):
         """异步初始化数据库"""
@@ -852,9 +883,22 @@ class QuartCrewServer(CrewServer):
     def _run_crew_kickoff_thread(self, local_dir, task_description, result_container: Dict[str, Any], conversation_id: str) -> None:
         """在独立线程中执行 crew.kickoff 并记录线程ID与结果。"""
         self._crew_thread_ids[conversation_id] = threading.get_ident()
+        result_container['crew_constructed'] = False
+        result_container['crew_kickoff_called'] = False
         try:
+            boundary_result = self.structure_boundary.handle(
+                source_text=task_description,
+                output_directory=local_dir,
+                invocation_key=conversation_id,
+            )
+            result_container['boundary_result'] = boundary_result
+            if not boundary_result.should_run_crewai:
+                result_container['result'] = boundary_result.rendered_response
+                return
+
             self.system_log("Initializing crew...")
             crew = self.generator.crew(local_dir)
+            result_container['crew_constructed'] = True
             # 注册映射关系（先注册再记录日志，避免未映射时fingerprint为None）
             self._register_mapping(conversation_id, crew.fingerprint.uuid_str)
             self.system_log("Registered mapping", crew.fingerprint.uuid_str)
@@ -874,6 +918,7 @@ class QuartCrewServer(CrewServer):
             crew.tasks = [task]
             
             self.system_log("Starting task execution...", crew.fingerprint.uuid_str)
+            result_container['crew_kickoff_called'] = True
             result_container['result'] = crew.kickoff()
 
 
@@ -1007,10 +1052,11 @@ class QuartCrewServer(CrewServer):
             finally:
                 # 完成日志
                 fingerprint = self._conversation_to_fingerprint.get(conversation_id)
-                try:
-                    self.generator.stop()
-                except Exception as e:
-                    print(f"Failed to stop mcp client: {e}")
+                if result_container.get('crew_constructed'):
+                    try:
+                        self.generator.stop()
+                    except Exception as e:
+                        print(f"Failed to stop mcp client: {e}")
                 if fingerprint:
                     self.system_log("Mission ended", fingerprint)
                 else:
@@ -1221,4 +1267,4 @@ class QuartCrewServer(CrewServer):
     # 同步启动方法（兼容性）
     def launch(self, host="127.0.0.1", port=5000, debug=False, **kwargs):
         """启动服务器（同步包装）"""
-        asyncio.run(self.launch_async(host, port, debug, **kwargs)) 
+        asyncio.run(self.launch_async(host, port, debug, **kwargs))

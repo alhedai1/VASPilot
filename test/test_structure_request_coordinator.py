@@ -184,12 +184,31 @@ class CoordinatorTests(unittest.TestCase):
             parsed(), resolution(ResolutionStatus.SEARCH_RESULTS, candidates=(candidate(),))
         )
         first = coordinator.handle_structure_request("same", self.temp.name, "key-1")
-        second = coordinator.handle_structure_request("different text", self.temp.name, "key-1")
+        second = coordinator.handle_structure_request("same", self.temp.name, "key-1")
         third = coordinator.handle_structure_request("same", self.temp.name, "key-2")
         self.assertFalse(first.returned_from_store)
         self.assertTrue(second.returned_from_store)
         self.assertFalse(third.returned_from_store)
         self.assertEqual((parser.calls, resolver.calls), (2, 2))
+
+    def test_same_key_with_changed_text_is_rejected(self):
+        coordinator, parser, resolver = self.coordinator(
+            parsed(), resolution(ResolutionStatus.SEARCH_RESULTS, candidates=(candidate(),))
+        )
+        coordinator.handle_structure_request("first", self.temp.name, "bound")
+        with self.assertRaisesRegex(ValueError, "different source text"):
+            coordinator.handle_structure_request("second", self.temp.name, "bound")
+        self.assertEqual((parser.calls, resolver.calls), (1, 1))
+
+    def test_same_key_with_changed_output_directory_is_rejected(self):
+        coordinator, parser, resolver = self.coordinator(
+            parsed(), resolution(ResolutionStatus.SEARCH_RESULTS, candidates=(candidate(),))
+        )
+        coordinator.handle_structure_request("same", self.temp.name, "bound-dir")
+        with tempfile.TemporaryDirectory() as other:
+            with self.assertRaisesRegex(ValueError, "output directory"):
+                coordinator.handle_structure_request("same", other, "bound-dir")
+        self.assertEqual((parser.calls, resolver.calls), (1, 1))
 
     def test_concurrent_same_key_executes_once(self):
         parser = FakeParser(parsed())
