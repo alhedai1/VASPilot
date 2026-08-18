@@ -23,8 +23,15 @@ from .structure_models import (
     SelectionBehavior,
     StructureRequest,
     StructureResolutionResult,
+    SemanticMatchSummary,
     SymmetrySummary,
     TheoreticalFilter,
+)
+from .structure_semantics import (
+    SEMANTIC_POLICY_VERSION,
+    SemanticCandidateStatus,
+    SemanticPlan,
+    StructureSemanticRecognizer,
 )
 
 
@@ -115,10 +122,12 @@ class StructureResolver:
         api_key: str,
         output_dir: str | Path,
         mpr_factory: Callable[[str], Any] = MPRester,
+        semantic_recognizer: Optional[StructureSemanticRecognizer] = None,
     ) -> None:
         self.api_key = api_key
         self.output_dir = Path(output_dir)
         self.mpr_factory = mpr_factory
+        self.semantic_recognizer = semantic_recognizer
         self.matcher = StructureMatcher(
             ltol=MATCHER_LTOL,
             stol=MATCHER_STOL,
@@ -130,8 +139,26 @@ class StructureResolver:
         )
 
     def resolve(self, request: StructureRequest) -> StructureResolutionResult:
+        semantic_plan: Optional[SemanticPlan] = None
         if request.semantic_label:
-            return self._result(request, ResolutionStatus.UNSUPPORTED_SEMANTIC)
+            recognizer = self._get_semantic_recognizer()
+            semantic_plan = recognizer.plan(request.semantic_label)
+            if semantic_plan is None:
+                return self._semantic_result(
+                    request,
+                    ResolutionStatus.UNSUPPORTED_SEMANTIC,
+                    None,
+                    error=f"unsupported semantic label: {request.semantic_label}",
+                )
+            if not recognizer.request_family_is_compatible(
+                semantic_plan, request.formula
+            ):
+                return self._semantic_result(
+                    request,
+                    ResolutionStatus.UNSUPPORTED_SEMANTIC,
+                    semantic_plan,
+                    error="2H v1 supports only transition-metal dichalcogenide MX2 compositions",
+                )
 
         try:
             normalized = self._normalize_request(request)
@@ -153,23 +180,61 @@ class StructureResolver:
                 validated.append(candidate)
         validated.sort(key=lambda item: self._sort_key(item.result, request.order_by))
 
+        if semantic_plan is not None:
+            semantic_validated = []
+            compatible_candidates = 0
+            for candidate in validated:
+                semantic_match = recognizer.match(
+                    semantic_plan, candidate.structure
+                )
+                if semantic_match.status != SemanticCandidateStatus.INCOMPATIBLE_FAMILY:
+                    compatible_candidates += 1
+                if semantic_match.status == SemanticCandidateStatus.MATCH:
+                    diagnostic = SemanticMatchSummary(
+                        requested_label=semantic_plan.requested_label,
+                        normalized_label=semantic_plan.normalized_label,
+                        match_method=semantic_match.match_method.value,
+                        matched_aflow_tag=semantic_plan.prototype.aflow_tag,
+                        matched_name=semantic_plan.prototype.mineral_name,
+                        semantic_policy_version=SEMANTIC_POLICY_VERSION,
+                    )
+                    semantic_validated.append(
+                        _ValidatedCandidate(
+                            result=candidate.result.model_copy(
+                                update={"semantic_match": diagnostic}
+                            ),
+                            structure=candidate.structure,
+                        )
+                    )
+            validated = semantic_validated
+            if not validated and compatible_candidates == 0:
+                return self._semantic_result(
+                    request,
+                    ResolutionStatus.UNSUPPORTED_SEMANTIC,
+                    semantic_plan,
+                    total_api_records=len(documents),
+                    error="no candidate belongs to the semantic label's supported material family",
+                )
+
         if not validated:
             status = (
                 ResolutionStatus.CONSTRAINTS_NOT_SATISFIED
                 if documents and len(request.material_ids) == 1
                 else ResolutionStatus.NO_MATCHES
             )
-            return self._result(
+            return self._semantic_result(
                 request,
                 status,
+                semantic_plan,
                 total_api_records=len(documents),
             )
 
         if request.operation == RequestOperation.SEARCH:
             results = tuple(item.result for item in validated[: request.result_limit])
-            return self._result(
+            return self._semantic_result(
                 request,
                 ResolutionStatus.SEARCH_RESULTS,
+                semantic_plan,
                 candidates=results,
                 total_api_records=len(documents),
                 validated_records=len(validated),
@@ -224,9 +289,10 @@ class StructureResolver:
                 group_results,
                 error=str(exc),
             )
-        return self._result(
+        return self._semantic_result(
             request,
             ResolutionStatus.SELECTED,
+            semantic_plan,
             candidates=tuple(item.result for item in validated),
             selected=winner.result,
             structure_path=str(path),
@@ -457,15 +523,26 @@ class StructureResolver:
         groups: tuple[EquivalenceGroupResult, ...],
         error: Optional[str] = None,
     ) -> StructureResolutionResult:
-        return self._result(
+        semantic_plan = (
+            self._get_semantic_recognizer().plan(request.semantic_label)
+            if request.semantic_label
+            else None
+        )
+        return self._semantic_result(
             request,
             status,
+            semantic_plan,
             candidates=tuple(item.result for item in validated),
             equivalence_groups=groups,
             total_api_records=len(documents),
             validated_records=len(validated),
             error=error,
         )
+
+    def _get_semantic_recognizer(self) -> StructureSemanticRecognizer:
+        if self.semantic_recognizer is None:
+            self.semantic_recognizer = StructureSemanticRecognizer()
+        return self.semantic_recognizer
 
     @staticmethod
     def _result(
@@ -477,5 +554,24 @@ class StructureResolver:
             status=status,
             request=request,
             resolver_policy_version=RESOLVER_POLICY_VERSION,
+            **kwargs,
+        )
+
+    @staticmethod
+    def _semantic_result(
+        request: StructureRequest,
+        status: ResolutionStatus,
+        plan: Optional[SemanticPlan],
+        **kwargs: Any,
+    ) -> StructureResolutionResult:
+        return StructureResolutionResult(
+            status=status,
+            request=request,
+            resolver_policy_version=RESOLVER_POLICY_VERSION,
+            requested_semantic_label=request.semantic_label,
+            normalized_semantic_label=plan.normalized_label if plan else None,
+            semantic_policy_version=(
+                SEMANTIC_POLICY_VERSION if request.semantic_label else None
+            ),
             **kwargs,
         )

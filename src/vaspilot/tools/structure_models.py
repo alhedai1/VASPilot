@@ -159,6 +159,17 @@ class SymmetrySummary(BaseModel):
     point_group: str
 
 
+class SemanticMatchSummary(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    requested_label: str
+    normalized_label: str
+    match_method: str
+    matched_aflow_tag: str
+    matched_name: str
+    semantic_policy_version: str
+
+
 class CandidateResult(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -173,6 +184,7 @@ class CandidateResult(BaseModel):
     deprecated: bool
     symmetry: SymmetrySummary
     equivalence_group: Optional[int] = None
+    semantic_match: Optional[SemanticMatchSummary] = None
 
 
 class EquivalenceGroupResult(BaseModel):
@@ -196,4 +208,7 @@ class StructureResolutionResult(BaseModel):
     total_api_records: int = 0
     validated_records: int = 0
     resolver_policy_version: str
+    requested_semantic_label: Optional[str] = None
+    normalized_semantic_label: Optional[str] = None
+    semantic_policy_version: Optional[str] = None
     error: Optional[str] = None
