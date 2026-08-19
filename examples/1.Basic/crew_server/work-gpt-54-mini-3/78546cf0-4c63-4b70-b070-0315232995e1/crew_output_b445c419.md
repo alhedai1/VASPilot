@@ -1,1 +1,0 @@
-Downloaded structure file path: `C:/Users/iAI/Desktop/VASPilot/VASPilot/examples/1.Basic/mcp/downloads\mp-2815_MoS2.vasp`

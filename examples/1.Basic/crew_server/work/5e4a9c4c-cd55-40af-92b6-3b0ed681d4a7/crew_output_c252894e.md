@@ -1,1 +1,0 @@
-. This structure will be used for further calculations.

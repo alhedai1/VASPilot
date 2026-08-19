@@ -1,3 +1,0 @@
-- Crystal structure of MoS2: `C:/Users/iAI/Desktop/VASPilot/VASPilot/examples/1.Basic/mcp/downloads\\mp-1434_MoS2.vasp`
-- 2×2×1 supercell of MoS2: `C:/Users/iAI/Desktop/VASPilot/VASPilot/examples/1.Basic/mcp/downloads\\mp-1434_MoS2_sc_[[2, 0, 0], [0, 2, 0], [0, 0, 1]].vasp`
-- Task execution status: Completed successfully. The structure file for the supercell has been validated for existence. The file is located at `C:/Users/iAI/Desktop/VASPilot/VASPilot/examples/1.Basic/mcp/downloads\\mp-1434_MoS2_sc_[[2, 0, 0], [0, 2, 0], [0, 0, 1]].vasp`

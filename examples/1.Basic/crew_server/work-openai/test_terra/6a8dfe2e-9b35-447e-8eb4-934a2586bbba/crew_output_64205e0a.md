@@ -1,1 +1,0 @@
-Unable to complete the requested structure search because no Crystal Structure Agent result was obtained.

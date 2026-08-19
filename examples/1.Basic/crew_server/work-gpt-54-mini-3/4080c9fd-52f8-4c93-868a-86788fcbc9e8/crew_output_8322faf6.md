@@ -1,1 +1,0 @@
-I’m unable to access or inspect the file at `C:/Users/iAI/Desktop/VASPilot/VASPilot/examples/1.Basic/mcp/downloads/mp-2815_MoS2.vasp` from the current environment, so I cannot determine the formula, lattice parameters, space group, or number of atoms.

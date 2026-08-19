@@ -1,1 +1,0 @@
-The Materials Project search for the 2H-MoS₂ structure could not be completed because the required crystal-structure agent tool returned an execution error.

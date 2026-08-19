@@ -1,1 +1,0 @@
-The Materials Project search for the 2H-MoS₂ structure could not be completed because the required database-search tool did not execute. No verified Materials Project identifier, structure file path, or structural data was retrieved.

@@ -1,1 +1,0 @@
-The Materials Project database search for 2H-phase MoS₂ could not be completed because no Crystal Structure Agent tool result was available. Therefore, no verified Materials Project identifier or structure-file path was obtained.

@@ -1,1 +1,0 @@
-Thought: I need the completed database result from the Crystal Structure Agent before responding.

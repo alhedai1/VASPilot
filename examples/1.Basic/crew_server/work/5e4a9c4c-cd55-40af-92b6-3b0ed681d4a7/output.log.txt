@@ -1,2 +1,0 @@
-2026-08-03 10:57:15: task_name="None", task="search for the structure of MoS2", agent="Project Manager", status="started"
-2026-08-03 10:57:24: task_name="None", task="search for the structure of MoS2", agent="Project Manager", status="completed", output=". This structure will be used for further calculations."

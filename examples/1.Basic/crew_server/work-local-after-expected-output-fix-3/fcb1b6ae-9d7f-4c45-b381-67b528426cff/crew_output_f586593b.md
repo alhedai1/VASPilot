@@ -1,6 +1,0 @@
-- **Crystal Structure File Path**: C:/Users/iAI/Desktop/VASPilot/VASPilot/examples/1.Basic/mcp/downloads\mp-990083_MoS2.vasp
-- **Lattice Parameters**: The lattice parameters can be found in the downloaded file, typically represented as a, b, c, and angles α, β, γ.
-- **Space Group**: The space group information is included in the crystal structure file and can be determined using crystallographic analysis tools.
-- **Composition**: The composition is MoS2, as indicated by the formula.
-- **Number of Atoms**: The number of atoms in the structure can be determined from the atomic positions in the downloaded file.
-- **Validation**: The crystal structure file for MoS2 exists at the specified path and is valid.
