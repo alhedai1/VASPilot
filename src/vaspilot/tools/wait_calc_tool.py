@@ -1,25 +1,23 @@
-import numpy as np
 import time
 import asyncio
-from typing import Type, Optional, Dict, Any, List, Union
+from typing import Type, Dict, Any, List
 from crewai.tools import BaseTool
 from pydantic import BaseModel, Field
 from fastmcp.client import Client
 
 class WaitCalcInput(BaseModel):
-    """归档工具的输入模式"""
-    calculation_ids: List[str] = Field(..., description="要检查的计算ID列表")
+    """Input schema for WaitCalcTool"""
+    calculation_ids: List[str] = Field(..., description="List of calculation IDs to check")
 
 class WaitCalcTool(BaseTool):
     mcp_url: str = "http://localhost:8933/mcp"
     args_schema: Type[BaseModel] = WaitCalcInput
-    
+
     def __init__(self, mcp_url: str):
         super().__init__(
             name="wait_calculations",
-            description="检查计算任务状态并返回结果"
+            description="Check the status of calculation tasks and return the results"
         )
-        # 使用 object.__setattr__ 来绕过 Pydantic 验证
         self.mcp_url = mcp_url
 
     async def _check_status(self, calculation_ids: List[str]) -> Dict[str, Any]:
@@ -34,78 +32,77 @@ class WaitCalcTool(BaseTool):
     def _run(self,
              calculation_ids: List[str]) -> Dict[str, Any]:
         """
-        检查计算任务状态并返回结果
-        
+        Check the status of calculation tasks and return the results
+
         Args:
-            calculation_ids: 要检查的计算ID列表
-        
+            calculation_ids: List of calculation IDs to check
+
         Returns:
-            包含每个计算任务状态和结果的字典，格式为：
+            Dictionary containing the status and results of each calculation task, formatted as:
             {
                 calculation_id: {
                     "slurm_id": "12345",
                     "calc_type": "relaxation",
                     "calculate_path": "/path/to/calculation",
                     "status": "running/completed/failed/error",
-                    ... 其他结果数据
+                    ... other result data
                 }
             }
         """
         if not calculation_ids:
             return {}
-        
-        print(f"开始监控计算状态，计算ID列表: {calculation_ids}")
-        
-        # 维护已完成和最终结果的字典
+
+        print(f"Starting to monitor calculation status, calculation IDs: {calculation_ids}")
+
+        # Track completed and final results
         completed_results = {}
         pending_calc_ids = calculation_ids.copy()
-        
+
         while pending_calc_ids:
             try:
-                # 只检查尚未完成的计算任务
+                # Only check calculation tasks that have not finished yet
                 status_result = asyncio.run(self._check_status(pending_calc_ids))
-                
+
                 if "error" in status_result:
-                    print(f"检查状态时出错: {status_result['error']}")
+                    print(f"Error while checking status: {status_result['error']}")
                     return status_result
-                
-                # 检查哪些计算已完成，移出待检查列表
+
+                # Determine which calculations have finished and remove them from the pending list
                 newly_completed = []
                 for calc_id in pending_calc_ids.copy():
                     if calc_id in status_result:
                         status = status_result[calc_id].get("status", "unknown")
                         if status in ["completed", "failed", "cancelled", "unknown", "timeout"]:
-                            # 任务已完成，保存结果并从待检查列表中移除
+                            # Task finished, save the result and remove it from the pending list
                             completed_results[calc_id] = status_result[calc_id]
                             newly_completed.append(calc_id)
                             pending_calc_ids.remove(calc_id)
                     else:
-                        # 如果某个计算ID不在结果中，暂时保留在待检查列表中
+                        # If a calculation ID is not in the results, keep it in the pending list for now
                         pass
-                
-                # 统计当前状态
+
+                # Summarize the current status
                 running_count = len(pending_calc_ids)
                 completed_count = len([r for r in completed_results.values() if r.get("status") == "completed"])
                 failed_count = len([r for r in completed_results.values() if r.get("status") in ["failed", "unknown"]])
-                
+
                 if newly_completed:
-                    print(f"新完成的任务: {newly_completed}")
-                
-                print(f"状态检查结果: 运行中 {running_count}, 已完成 {completed_count}, 失败 {failed_count}")
-                
-                # 如果所有计算都已完成，返回结果
+                    print(f"Newly completed tasks: {newly_completed}")
+
+                print(f"Status check result: running {running_count}, completed {completed_count}, failed {failed_count}")
+
+                # If all calculations have finished, return the results
                 if not pending_calc_ids:
-                    print("所有计算任务已完成")
+                    print("All calculation tasks have completed")
                     return completed_results
-                
-                # 等待30秒后继续检查
-                print(f"还有 {len(pending_calc_ids)} 个任务未完成，等待30秒后继续检查...")
+
+                # Wait 30 seconds before checking again
+                print(f"{len(pending_calc_ids)} task(s) still pending, waiting 30 seconds before checking again...")
                 time.sleep(30)
-                
+
             except Exception as e:
-                print(f"监控过程中发生错误: {str(e)}")
-                return {"error": f"监控过程中发生错误: {str(e)}"}
-        
-        # 理论上不应该到达这里，但为了满足linter要求添加默认返回值
+                print(f"An error occurred while monitoring: {str(e)}")
+                return {"error": f"An error occurred while monitoring: {str(e)}"}
+
+        # This point should not be reached in practice, but a default return value satisfies the linter
         return completed_results
-        

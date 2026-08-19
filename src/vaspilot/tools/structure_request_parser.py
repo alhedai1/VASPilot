@@ -7,7 +7,7 @@ import re
 from enum import Enum
 from typing import Any, Callable, Optional, Sequence
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from pymatgen.core import Composition, Element
 from pymatgen.symmetry.groups import SpaceGroup
 

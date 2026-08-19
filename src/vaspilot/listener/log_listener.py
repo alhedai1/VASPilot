@@ -1,14 +1,3 @@
-# from crewai.utilities.events import (
-#     CrewKickoffStartedEvent,
-#     CrewKickoffCompletedEvent,
-#     AgentExecutionCompletedEvent,
-#     AgentExecutionStartedEvent,
-#     ToolUsageStartedEvent,
-#     ToolUsageFinishedEvent,
-#     ToolUsageErrorEvent,
-#     TaskEvaluationEvent,
-# )
-
 from crewai.events import (
     CrewKickoffStartedEvent,
     CrewKickoffCompletedEvent,
@@ -16,17 +5,11 @@ from crewai.events import (
     AgentExecutionStartedEvent,
     ToolUsageStartedEvent,
     ToolUsageFinishedEvent,
-    ToolUsageErrorEvent,
-    TaskEvaluationEvent,
     BaseEventListener,
 )
 
 from crewai.events.event_bus import CrewAIEventsBus
 
-from typing import Dict, Any
-
-# from crewai.utilities.events.base_event_listener import BaseEventListener
-# from crewai.utilities.events.crewai_event_bus import CrewAIEventsBus
 from abc import ABC, abstractmethod
 
 class BaseLogger(ABC):

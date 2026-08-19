@@ -1,22 +1,16 @@
 import json
 import logging
-import os
 import sys
 import threading
 import warnings
-from collections import defaultdict
 from contextlib import contextmanager
 from typing import (
     Any,
-    DefaultDict,
     Dict,
     List,
-    Literal,
     Optional,
-    Type,
     TypedDict,
     Union,
-    cast,
 )
 from datetime import datetime
 from dotenv import load_dotenv
@@ -27,7 +21,6 @@ from crewai.events.types.llm_events import (
     LLMCallFailedEvent,
     LLMCallStartedEvent,
     LLMCallType,
-    LLMStreamChunkEvent,
 )
 from crewai.events.types.tool_usage_events import (
     ToolUsageStartedEvent,
@@ -42,9 +35,6 @@ from typing import TextIO
 
 from crewai.llms.base_llm import BaseLLM
 from crewai.utilities.events import crewai_event_bus
-from crewai.utilities.exceptions.context_window_exceeding_exception import (
-    LLMContextLengthExceededError,
-)
 
 load_dotenv()
 
@@ -321,7 +311,7 @@ class LocalLLM(BaseLLM):
                 stream=False,
             )
 
-        except Exception as e:
+        except Exception:
             # Convert litellm's context window error to our own exception type
             # for consistent handling in the rest of the codebase
             raise

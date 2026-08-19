@@ -3,40 +3,35 @@ import time
 import subprocess
 import shutil
 from pymatgen.core import Element, Structure
-from pymatgen.io.vasp import VaspInput, Vasprun, Kpoints, Poscar, Chgcar, Potcar, Outcar
-from pymatgen.electronic_structure.bandstructure import BandStructure, BandStructureSymmLine
-import math
-import pathlib
-from typing import Optional, Dict, Any, Union
+from pymatgen.io.vasp import VaspInput, Vasprun, Kpoints, Poscar, Potcar
+from typing import Optional, Dict, Any
 import numpy as np
-from mcp.server.fastmcp import Context
 
 
 def _submit_slurm_job(calc_type: str, calculate_path: str, 
                      attachment_path: Optional[str] = None) -> Dict[str, Any]:
     """
-    通用的SLURM任务提交方法
-    
-    参数:
-        calculation_id: 计算ID
-        calc_type: 计算类型 ("relaxation", "scf", "nscf")
-        calculate_path: 计算路径
-        attachment_path: 附件路径，包含SLURM脚本等文件
-        
-    返回:
-        Dict包含slurm_id、calc_type、calculate_path、success、error、status等信息
+    Generic SLURM job submission method
+
+    Args:
+        calc_type: Calculation type ("relaxation", "scf", "nscf")
+        calculate_path: Calculation directory path
+        attachment_path: Attachment path containing the SLURM script and other files
+
+    Returns:
+        Dict containing slurm_id, calc_type, calculate_path, success, error, status, etc.
     """
     try:
-        # 如果指定了附件路径，复制附件文件到计算目录
+        # If an attachment path is given, copy the attachment files into the calculation directory
         if attachment_path is not None and os.path.exists(attachment_path):
-            # 复制附件目录下的所有文件到计算目录
+            # Copy all files under the attachment directory into the calculation directory
             for file_name in os.listdir(attachment_path):
                 src_file = os.path.join(attachment_path, file_name)
                 dst_file = os.path.join(calculate_path, file_name)
                 if os.path.isfile(src_file):
                     shutil.copy2(src_file, dst_file)
-        
-        # 查找SLURM脚本文件
+
+        # Locate the SLURM script file
         slurm_script_path = None
         for script_name in ['submit.sh', 'run.sh', 'slurm.sh']:
             script_path = os.path.join(calculate_path, script_name)
@@ -54,13 +49,13 @@ def _submit_slurm_job(calc_type: str, calculate_path: str,
                 "status": "failed"
             }
         
-        # 提交SLURM任务
+        # Submit the SLURM job
         time.sleep(3)
-        result = subprocess.run(['sbatch', slurm_script_path], 
+        result = subprocess.run(['sbatch', slurm_script_path],
                               capture_output=True, text=True, cwd=calculate_path)
-        
+
         if result.returncode == 0:
-            # 从sbatch输出中提取任务ID
+            # Extract the job ID from the sbatch output
             slurm_id = result.stdout.strip().split()[-1]
             
             return {
@@ -95,25 +90,25 @@ def _submit_slurm_job(calc_type: str, calculate_path: str,
 def vasp_relaxation(calculation_id: str, work_dir: str, struct: Structure, 
                    kpoints: Kpoints, incar_dict: dict, attachment_path: Optional[str] = None, potcar_map: Optional[Dict] = None) -> Dict[str, Any]:
     """
-    提交VASP结构优化计算任务
-    
-    参数:
-        calculation_id: 计算ID
-        work_dir: 工作目录
-        struct: 晶体结构
-        kpoints: K点设置
-        incar_dict: 额外的INCAR参数，会与默认设置合并。除非用户指定，不要擅自修改。
-        attachment_path: 附件路径，包含SLURM脚本等文件
-        
-    返回:
-        Dict包含slurm_id、calc_type、calculate_path、success、error、status等信息
+    Submit a VASP structural relaxation calculation task
+
+    Args:
+        calculation_id: Calculation ID
+        work_dir: Working directory
+        struct: Crystal structure
+        kpoints: K-point settings
+        incar_dict: Additional INCAR parameters, merged with the defaults. Do not modify these on your own unless the user specifies it.
+        attachment_path: Attachment path containing the SLURM script and other files
+
+    Returns:
+        Dict containing slurm_id, calc_type, calculate_path, success, error, status, etc.
     """
     Name = calculation_id
     calc_dir = os.path.abspath(f'{work_dir}/{Name}')
     if potcar_map is None:
         potcar_map = {}
-    # 创建VASP输入文件
-    # 手动获取元素列表，确保顺序与POSCAR一致
+    # Create the VASP input files
+    # Manually derive the element list to ensure the order matches POSCAR
     poscar = Poscar(struct)
     unique_species = []
     for species in poscar.structure.species:
@@ -138,12 +133,12 @@ def vasp_relaxation(calculation_id: str, work_dir: str, struct: Structure,
         potcar=Potcar(potcar_symbols)
     )
     
-    # 准备结构优化目录
+    # Prepare the structural relaxation directory
     rlx_dir = os.path.join(calc_dir, "rlx/")
     os.makedirs(rlx_dir, exist_ok=True)
     vasp_input.write_input(rlx_dir)
-    
-    # 提交SLURM任务
+
+    # Submit the SLURM job
     return _submit_slurm_job("relaxation", rlx_dir, attachment_path)
 
 
@@ -151,27 +146,27 @@ def vasp_scf(calculation_id: str, work_dir: str, struct: Structure,
             kpoints: Kpoints, incar_dict: dict, chgcar_path: Optional[str] = None, 
             wavecar_path: Optional[str] = None, attachment_path: Optional[str] = None, potcar_map: Optional[Dict] = None) -> Dict[str, Any]:
     """
-    提交VASP自洽场计算任务
-    
-    参数:
-        calculation_id: 计算ID
-        work_dir: 工作目录
-        struct: 晶体结构
-        kpoints: K点设置
-        incar_dict: 额外的INCAR参数，会与默认设置合并。除非用户指定，不要擅自修改。
-        chgcar_path: CHGCAR文件路径
-        wavecar_path: WAVECAR文件路径
-        attachment_path: 附件路径，包含SLURM脚本等文件
-        
-    返回:
-        Dict包含slurm_id、calc_type、calculate_path、success、error、status等信息
+    Submit a VASP self-consistent field (SCF) calculation task
+
+    Args:
+        calculation_id: Calculation ID
+        work_dir: Working directory
+        struct: Crystal structure
+        kpoints: K-point settings
+        incar_dict: Additional INCAR parameters, merged with the defaults. Do not modify these on your own unless the user specifies it.
+        chgcar_path: Path to the CHGCAR file
+        wavecar_path: Path to the WAVECAR file
+        attachment_path: Attachment path containing the SLURM script and other files
+
+    Returns:
+        Dict containing slurm_id, calc_type, calculate_path, success, error, status, etc.
     """
     Name = calculation_id
     calc_dir = os.path.abspath(f'{work_dir}/{Name}')
     if potcar_map is None:
         potcar_map = {}
-    # 创建VASP输入文件
-    # 手动获取元素列表，确保顺序与POSCAR一致
+    # Create the VASP input files
+    # Manually derive the element list to ensure the order matches POSCAR
     poscar = Poscar(struct)
     unique_species = []
     for species in poscar.structure.species:
@@ -196,18 +191,18 @@ def vasp_scf(calculation_id: str, work_dir: str, struct: Structure,
         potcar=Potcar(potcar_symbols)
     )
 
-    # 准备自洽场计算目录
+    # Prepare the SCF calculation directory
     scf_dir = os.path.join(calc_dir, "scf/")
     os.makedirs(scf_dir, exist_ok=True)
     vasp_input.write_input(scf_dir)
-    
-    # 复制相关文件
+
+    # Copy over related files
     if chgcar_path is not None and os.path.exists(chgcar_path):
         shutil.copy2(chgcar_path, os.path.join(scf_dir, "CHGCAR"))
     if wavecar_path is not None and os.path.exists(wavecar_path):
         shutil.copy2(wavecar_path, os.path.join(scf_dir, "WAVECAR"))
-    
-    # 提交SLURM任务
+
+    # Submit the SLURM job
     return _submit_slurm_job("scf", scf_dir, attachment_path)
 
 
@@ -216,28 +211,28 @@ def vasp_nscf(calculation_id: str, work_dir: str, struct: Structure,
              wavecar_path: Optional[str] = None, attachment_path: Optional[str] = None, 
              potcar_map: Optional[Dict] = None) -> Dict[str, Any]:
     """
-    提交VASP非自洽场计算任务（能带计算）
-    
-    参数:
-        calculation_id: 计算ID
-        work_dir: 工作目录
-        struct: 晶体结构
-        kpoints: K点设置
-        incar_dict: 额外的INCAR参数，会与默认设置合并。除非用户指定，不要擅自修改。
-        chgcar_path: CHGCAR文件路径
-        wavecar_path: WAVECAR文件路径
-        attachment_path: 附件路径，包含SLURM脚本等文件
-        potcar_map: POTCAR映射字典
-        
-    返回:
-        Dict包含slurm_id、calc_type、calculate_path、success、error、status等信息
+    Submit a VASP non-self-consistent field (NSCF) calculation task (band structure calculation)
+
+    Args:
+        calculation_id: Calculation ID
+        work_dir: Working directory
+        struct: Crystal structure
+        kpoints: K-point settings
+        incar_dict: Additional INCAR parameters, merged with the defaults. Do not modify these on your own unless the user specifies it.
+        chgcar_path: Path to the CHGCAR file
+        wavecar_path: Path to the WAVECAR file
+        attachment_path: Attachment path containing the SLURM script and other files
+        potcar_map: POTCAR mapping dictionary
+
+    Returns:
+        Dict containing slurm_id, calc_type, calculate_path, success, error, status, etc.
     """
     Name = calculation_id
     calc_dir = os.path.abspath(f'{work_dir}/{Name}')
     if potcar_map is None:
         potcar_map = {}
-    # 创建VASP输入文件
-    # 手动获取元素列表，确保顺序与POSCAR一致
+    # Create the VASP input files
+    # Manually derive the element list to ensure the order matches POSCAR
     poscar = Poscar(struct)
     unique_species = []
     for species in poscar.structure.species:
@@ -262,26 +257,26 @@ def vasp_nscf(calculation_id: str, work_dir: str, struct: Structure,
         potcar=Potcar(potcar_symbols)
     )
     
-    # 准备能带计算目录
+    # Prepare the band structure calculation directory
     band_dir = os.path.join(calc_dir, "band/")
     os.makedirs(band_dir, exist_ok=True)
     vasp_input.write_input(band_dir)
-    
-    # 复制相关文件
+
+    # Copy over related files
     if os.path.exists(chgcar_path):
         shutil.copy2(chgcar_path, os.path.join(band_dir, "CHGCAR"))
     if wavecar_path is not None and os.path.exists(wavecar_path):
         shutil.copy2(wavecar_path, os.path.join(band_dir, "WAVECAR"))
-    
-    # 提交SLURM任务
+
+    # Submit the SLURM job
     return _submit_slurm_job("nscf", band_dir, attachment_path)
 
 
 def check_status(calc_dict: dict[str, dict[str, Any]]) -> Dict[str, Any]:
     """
-    检查SLURM任务状态并返回计算结果
+    Check SLURM job status and return the calculation results
 
-    参数:
+    Args:
         calc_dict: {
             calc_id: {
                 "slurm_id": slurm_id,
@@ -291,8 +286,8 @@ def check_status(calc_dict: dict[str, dict[str, Any]]) -> Dict[str, Any]:
             }
         }
 
-    返回:
-        Dict包含每个任务的状态和结果
+    Returns:
+        Dict containing the status and result of each job
     """
 
     for calc_id, job_info in calc_dict.items():
@@ -301,7 +296,7 @@ def check_status(calc_dict: dict[str, dict[str, Any]]) -> Dict[str, Any]:
         calculate_path = job_info["calculate_path"]
 
         try:
-            # 检查SLURM任务状态
+            # Check the SLURM job status
             time.sleep(3)
 
             result = subprocess.run(
@@ -311,12 +306,12 @@ def check_status(calc_dict: dict[str, dict[str, Any]]) -> Dict[str, Any]:
             )
 
             if result.returncode == 0 and result.stdout.strip():
-                # 任务仍在运行
+                # Job is still running
                 job_status = "running"
                 job_result = {}
 
             else:
-                # 任务已离开 squeue，使用 scontrol 检查最终状态
+                # Job has left squeue; use scontrol to check its final state
                 time.sleep(3)
 
                 scontrol_result = subprocess.run(
@@ -445,11 +440,11 @@ def check_status(calc_dict: dict[str, dict[str, Any]]) -> Dict[str, Any]:
 
 def _read_calculation_result(calc_type: str, calculate_path: str) -> Dict[str, Any]:
     """
-    根据计算类型读取计算结果
+    Read the calculation result based on the calculation type
     """
     try:
         if calc_type == "relaxation":
-            # 读取结构优化结果
+            # Read the structural relaxation result
             vasprun = Vasprun(os.path.join(calculate_path, "vasprun.xml"))
             contcar = Poscar.from_file(os.path.join(calculate_path, "CONTCAR"))
             
@@ -463,7 +458,7 @@ def _read_calculation_result(calc_type: str, calculate_path: str) -> Dict[str, A
             }
             
         elif calc_type == "scf":
-            # 读取自洽场计算结果
+            # Read the SCF calculation result
             vasprun = Vasprun(os.path.join(calculate_path, "vasprun.xml"))
             
             return {
@@ -478,7 +473,7 @@ def _read_calculation_result(calc_type: str, calculate_path: str) -> Dict[str, A
             }
             
         elif calc_type == "nscf":
-            # 读取能带计算结果
+            # Read the band structure calculation result
             vasprun = Vasprun(os.path.join(calculate_path, "vasprun.xml"))
             bs = vasprun.get_band_structure()
             
@@ -508,7 +503,7 @@ def _read_calculation_result(calc_type: str, calculate_path: str) -> Dict[str, A
 
 def cancel_slurm_job(slurm_id: str) -> Dict[str, Any]:
     """
-    取消SLURM任务
+    Cancel a SLURM job
     """
     try:
         subprocess.run(['scancel', slurm_id], capture_output=True, text=True)

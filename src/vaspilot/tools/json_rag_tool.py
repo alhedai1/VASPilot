@@ -1,13 +1,11 @@
 import json
-import os
-from typing import Any, Dict, List, Optional, Type, Set
+from typing import Any, Dict, Optional, Type, Set
 from pathlib import Path
 
 from crewai.tools.base_tool import BaseTool
 from pydantic import BaseModel, Field, model_validator
 import chromadb
-from chromadb import EmbeddingFunction, Client, Collection, ClientAPI
-from chromadb.utils import embedding_functions
+from chromadb import EmbeddingFunction, Collection, ClientAPI
 import uuid
 
 
@@ -30,18 +28,18 @@ class JsonApproxSearch(BaseTool):
     )
     args_schema: Type[BaseModel] = JsonApproxSearchInput
     
-    # 添加embedding_function作为字段
+    # embedding_function field
     embedding_function: EmbeddingFunction = Field(description="Embedding function for ChromaDB")
     source_files: Set[str] = Field(default_factory=set)
-    # 声明实例属性类型，添加默认值
+    # Declared instance attribute types with default values
     client: Optional[ClientAPI] = Field(default=None)
     collection: Optional[Collection] = Field(default=None)
     chroma_db_path: str = Field(default="")
 
     @model_validator(mode='after')
     def initialize_components(self) -> 'JsonApproxSearch':
-        """Pydantic v2风格的初始化方法"""
-        # 初始化ChromaDB客户端
+        """Pydantic v2-style initializer"""
+        # Initialize the ChromaDB client
         if self.chroma_db_path:
             self.client = chromadb.PersistentClient(path=self.chroma_db_path)
         else:
@@ -52,37 +50,37 @@ class JsonApproxSearch(BaseTool):
             embedding_function=self.embedding_function
         )
         
-        # 用于跟踪已添加的文件
+        # Track files that have already been added
         if self.collection.count() == 0:
             for files in self.source_files:
                 self.add(files)
-            
+
         return self
-    
+
     def add(self, json_file_path: str) -> None:
         """
-        添加JSON文件到知识库
-        
+        Add a JSON file to the knowledge base
+
         Args:
-            json_file_path: JSON文件的路径
+            json_file_path: Path to the JSON file
         """
         json_path = Path(json_file_path)
-        
-        # 检查文件是否存在
+
+        # Check whether the file exists
         if not json_path.exists():
-            raise FileNotFoundError(f"文件不存在: {json_file_path}")
-        
-        # 读取JSON文件
+            raise FileNotFoundError(f"File does not exist: {json_file_path}")
+
+        # Read the JSON file
         with open(json_path, 'r', encoding='utf-8') as f:
             data = json.load(f)
-        
-        # 准备数据用于向量化
+
+        # Prepare data for embedding
         documents = []
         metadatas = []
         ids = []
-        
+
         for tag_name, tag_info in data.items():
-            # 构建用于向量化的文本
+            # Build the text to embed
             text_parts = [
                 f"Tag name: {tag_name}",
                 f"Default value: {tag_info.get('default_value', '')}",
@@ -91,8 +89,8 @@ class JsonApproxSearch(BaseTool):
                 f"Related tags: {', '.join(tag_info.get('related_tags', []))}"
             ]
             document_text = "\n".join(text_parts)
-            
-            # 准备元数据
+
+            # Prepare metadata
             metadata = {
                 "tag_name": tag_name,
                 "default_value": tag_info.get('default_value', ''),
@@ -104,41 +102,41 @@ class JsonApproxSearch(BaseTool):
             documents.append(document_text)
             metadatas.append(metadata)
             ids.append(f"{tag_name}_{str(uuid.uuid4())[:8]}")
-        
-        # 添加到向量数据库
+
+        # Add to the vector database
         if documents:
             self.collection.add(
                 documents=documents,
                 metadatas=metadatas,
                 ids=ids
             )
-            print(f"成功添加 {len(documents)} 个标签到知识库: {json_file_path}")
-        
+            print(f"Successfully added {len(documents)} tags to the knowledge base: {json_file_path}")
+
     def _run(self, query: str, top_k: int = 10) -> dict:
         """
-        执行RAG查询
-        
+        Execute a RAG query
+
         Args:
-            query: 查询文本
-            top_k: 返回结果的数量
-            
+            query: Query text
+            top_k: Number of results to return
+
         Returns:
-            查询结果的字典
+            Dictionary of query results
         """
-        # 检查知识库是否为空
+        # Check whether the knowledge base is empty
         if self.collection.count() == 0:
-            return "知识库为空，请先使用 add() 方法添加JSON文件。"
-        
-        # 执行查询
+            return "The knowledge base is empty. Please add JSON files first using the add() method."
+
+        # Execute the query
         results = self.collection.query(
             query_texts=[query],
             n_results=top_k
         )
-        
-        # 格式化结果
+
+        # Format the results
         if not results['documents'][0]:
-            return "未找到相关的标签信息。"
-        
+            return "No relevant tag information found."
+
         response = {}
         
         for i, (metadata, distance) in enumerate(zip(results['metadatas'][0], results['distances'][0]), 1):
@@ -165,15 +163,15 @@ class JsonStrictSearch(BaseTool):
     description: str = "Tool to query detailed descriptions. The detailed description is long, only query the most important tags."
     args_schema: Type[BaseModel] = JsonStrictSearchInput
     source_files: Set[str] = Field(default_factory=set)
-    # 声明实例属性类型
+    # Declared instance attribute type
     data_dict: Dict[str, Any] = Field(default_factory=dict)
 
     def add(self, json_file_path: str) -> None:
         """
-        添加JSON文件到知识库
-        
+        Add a JSON file to the knowledge base
+
         Args:
-            json_file_path: JSON文件的路径
+            json_file_path: Path to the JSON file
         """
         json_path = Path(json_file_path)
         with open(json_path, 'r', encoding='utf-8') as f:
@@ -183,8 +181,8 @@ class JsonStrictSearch(BaseTool):
 
     @model_validator(mode='after')
     def initialize_components(self) -> 'JsonStrictSearch':
-        """Pydantic v2风格的初始化方法"""
-        # 用于跟踪已添加的文件
+        """Pydantic v2-style initializer"""
+        # Track files that have already been added
         for files in self.source_files:
             self.add(files)
             

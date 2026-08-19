@@ -5,18 +5,14 @@ from crewai.events import (
     AgentExecutionStartedEvent,
     ToolUsageStartedEvent,
     ToolUsageFinishedEvent,
-    ToolUsageErrorEvent,
-    TaskEvaluationEvent,
 )
 from datetime import datetime
 import json
-from typing import Dict, Any, List
+from typing import Dict, Any
 
 from crewai.events.base_event_listener import BaseEventListener
 from crewai.events.event_bus import CrewAIEventsBus
 from abc import ABC, abstractmethod
-
-from pydantic import BaseModel, Field
 
 import ast
 
@@ -56,26 +52,6 @@ class ServerListener(BaseEventListener):
         self.exclude_agents = exclude_agents
         self.exclude_tools = exclude_tools
         self.server = server
-
-    # def _format_tool_output(self, tool_output: str) -> Dict[str, Any]:
-    #     system_prompt = '\nYou ONLY have access to the following tools, and should NEVER make up tools that are not listed here:'
-    #     tool_output = tool_output.split(system_prompt)[0]
-    #     tool_output = tool_output.replace("'", '"')
-    #     tool_output = tool_output.replace("None", "null")
-    #     tool_output = tool_output.replace("True", "true")
-    #     tool_output = tool_output.replace("False", "false")
-    #     try:
-    #         # 尝试解析JSON
-    #         return json.loads(tool_output)
-    #     except (json.JSONDecodeError, ValueError) as e:
-    #         # 如果JSON解析失败，返回原始输出的字典格式
-    #         print(f"[WARNING] 工具输出JSON解析失败: {str(e)}")
-    #         print(f"[WARNING] 原始输出: {tool_output[:200]}...")
-    #         return {
-    #             "raw_output": tool_output,
-    #             "parse_error": str(e),
-    #             "error_type": "json_parse_failed"
-    #         }
 
     def _format_tool_output(self, tool_output: Any) -> Dict[str, Any]:
         # Some CrewAI tools may already return parsed objects.
@@ -213,12 +189,12 @@ class ServerListener(BaseEventListener):
                             )
                             print(f"[INFO] Successfully logged tool output: {event.tool_name}")
                         except Exception as e:
-                            # 如果所有处理都失败，至少记录原始输出
+                            # If all processing fails, at least log the raw output
                             print(f"[ERROR] An error occurred while processing the tool output.: {str(e)}")
                             print(f"[ERROR] Tool name: {event.tool_name}")
                             print(f"[ERROR] Raw output: {str(event.output)[:200]}...")
-                            
-                            # 创建一个安全的错误输出记录
+
+                            # Create a safe error output record
                             fallback_output = {
                                 "error": "tool_output_processing_failed",
                                 "tool_name": event.tool_name,
@@ -236,6 +212,6 @@ class ServerListener(BaseEventListener):
                                         "timestamp": datetime.now().isoformat()
                                     }
                                 )
-                                print(f"[INFO] 使用fallback方式记录了工具输出: {event.tool_name}")
+                                print(f"[INFO] Logged tool output using the fallback method: {event.tool_name}")
                             except Exception as inner_e:
-                                print(f"[FATAL] 连fallback记录都失败了: {str(inner_e)}")
+                                print(f"[FATAL] Fallback logging also failed: {str(inner_e)}")

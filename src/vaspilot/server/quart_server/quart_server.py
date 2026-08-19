@@ -1,18 +1,15 @@
 #!/usr/bin/env python3
 """
-CrewAI VASP Quart异步服务器
-功能：任务提交、历史记录、详情查看、实时更新、并行任务队列管理
-基于 CrewServer 基类实现，支持异步操作
+CrewAI VASP Quart asynchronous server
+Features: task submission, execution history, detail view, live updates, parallel task queue management
+Implemented on top of the CrewServer base class, with async operation support
 """
 
 import os
-import sys
 import json
 import uuid
 import threading
-import argparse
 import re
-import signal
 import asyncio
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -22,14 +19,13 @@ from enum import Enum
 
 from quart import Quart, render_template, request, jsonify, g, send_file, abort
 import aiosqlite
-from markdown import markdown
 import ctypes
 from werkzeug.utils import secure_filename
 
-# 添加项目路径到sys.path
-current_dir = Path(__file__).parent  # quart_server/
+# Directory of this module (quart_server/)
+current_dir = Path(__file__).parent
 
-# 导入项目模块
+# Import project modules
 from ...listener.server_listener import CrewServer, ServerListener
 from ...crew import VaspCrew
 from ...tools.structure_application_boundary import StructureApplicationBoundary
@@ -54,7 +50,7 @@ def _structure_resolver_from_environment(output_directory: Path) -> StructureRes
 
 
 class TaskStatus(Enum):
-    """任务状态枚举"""
+    """Task status enum"""
     QUEUED = "queued"
     RUNNING = "running"
     COMPLETED = "completed"
@@ -64,7 +60,7 @@ class TaskStatus(Enum):
 
 @dataclass
 class QueuedTask:
-    """队列中的任务"""
+    """A task waiting in the queue"""
     conversation_id: str
     task_description: str
     created_at: datetime
@@ -72,7 +68,7 @@ class QueuedTask:
 
 
 class QuartCrewServer(CrewServer):
-    """基于Quart的异步CrewServer实现"""
+    """Quart-based asynchronous CrewServer implementation"""
     
     def __init__(self, crew_config: Dict[str, Any], title: str = "VASPilot Async Server", 
                  work_dir: str = ".", db_path: Optional[str] = None, 
@@ -85,46 +81,46 @@ class QuartCrewServer(CrewServer):
         self.work_dir = os.path.abspath(work_dir)
         self.allow_path = allow_path
         
-        # 并发控制参数
+        # Concurrency control parameters
         self.max_concurrent_tasks = max_concurrent_tasks
         self.max_queue_size = max_queue_size
-        
-        # 任务管理
+
+        # Task management
         self.running_tasks: Dict[str, asyncio.Task] = {}
         self.task_queue: List[QueuedTask] = []
         self.task_semaphore = asyncio.Semaphore(max_concurrent_tasks)
         self._current_conversation_id: Optional[str] = None
-        
-        # 数据库路径
+
+        # Database path
         if db_path is None:
             db_path = os.path.join(work_dir, 'crew_tasks.db')
         self.db_path = os.path.abspath(db_path)
-        
-        # 创建Quart应用
+
+        # Create the Quart app
         template_folder = str(current_dir / "templates")
         self.app = Quart(__name__, template_folder=template_folder)
         self.app.secret_key = 'crew-ai-quart-server'
-        
-        # 上传目录
+
+        # Upload directory
         self.upload_dir = os.path.join(self.work_dir, 'uploads')
         os.makedirs(self.upload_dir, exist_ok=True)
-        
+
         self.generator = VaspCrew(self.config)
         self.structure_boundary = structure_boundary or self._create_structure_boundary()
         self.current_logger = ServerListener(self)
-        # 并行任务下映射关系：conversation_id <-> crew_fingerprint
+        # Mapping between concurrently running tasks: conversation_id <-> crew_fingerprint
         self._conversation_to_fingerprint: Dict[str, str] = {}
         self._fingerprint_to_conversation: Dict[str, str] = {}
         self._mapping_lock = threading.Lock()
         self._running_threads: Dict[str, threading.Thread] = {}
         self._crew_thread_ids: Dict[str, int] = {}
 
-        # 日志基础设施（启动时在事件循环内初始化）
+        # Logging infrastructure (initialized inside the event loop at startup)
         self._log_queue = None
         self._log_worker_task = None
         self._event_loop = None
 
-        # 设置路由
+        # Set up routes
         self._setup_routes()
 
     def _create_structure_boundary(self) -> StructureApplicationBoundary:
@@ -140,18 +136,18 @@ class QuartCrewServer(CrewServer):
         return StructureApplicationBoundary(classifier, coordinator, store)
 
     async def _init_db(self):
-        """异步初始化数据库"""
+        """Asynchronously initialize the database"""
         try:
-            # 确保数据库目录存在
+            # Ensure the database directory exists
             db_dir = os.path.dirname(self.db_path)
             if db_dir and not os.path.exists(db_dir):
                 os.makedirs(db_dir, exist_ok=True)
-                print(f"📁 创建数据库目录: {db_dir}")
-            
-            print(f"🗄️ 初始化数据库: {self.db_path}")
-            
+                print(f"📁 Created database directory: {db_dir}")
+
+            print(f"🗄️ Initializing database: {self.db_path}")
+
             async with aiosqlite.connect(self.db_path) as conn:
-                # 创建 task_executions 表
+                # Create the task_executions table
                 await conn.execute('''
                     CREATE TABLE IF NOT EXISTS task_executions (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -166,7 +162,7 @@ class QuartCrewServer(CrewServer):
                     )
                 ''')
                 
-                # 创建 activity_logs 表
+                # Create the activity_logs table
                 await conn.execute('''
                     CREATE TABLE IF NOT EXISTS activity_logs (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -178,60 +174,60 @@ class QuartCrewServer(CrewServer):
                         FOREIGN KEY (conversation_id) REFERENCES task_executions (conversation_id)
                     )
                 ''')
-                
+
                 await conn.commit()
-                
-                # 验证表是否创建成功
+
+                # Verify the tables were created successfully
                 async with conn.execute("SELECT name FROM sqlite_master WHERE type='table'") as cursor:
                     tables = [row[0] async for row in cursor]
                     expected_tables = ['task_executions', 'activity_logs']
-                    
+
                     for table in expected_tables:
                         if table in tables:
-                            print(f"✅ 表 '{table}' 创建成功")
+                            print(f"✅ Table '{table}' created successfully")
                         else:
-                            raise Exception(f"表 '{table}' 创建失败")
-                            
-                print("🎉 数据库初始化完成")
-                
+                            raise Exception(f"Failed to create table '{table}'")
+
+                print("🎉 Database initialization complete")
+
         except Exception as e:
-            print(f"❌ 数据库初始化失败: {str(e)}")
-            print(f"数据库路径: {self.db_path}")
-            print(f"工作目录: {self.work_dir}")
+            print(f"❌ Database initialization failed: {str(e)}")
+            print(f"Database path: {self.db_path}")
+            print(f"Working directory: {self.work_dir}")
             raise
 
     async def _get_db(self):
-        """获取数据库连接"""
+        """Get the database connection"""
         db = getattr(g, '_database', None)
         if db is None:
             try:
                 db = g._database = await aiosqlite.connect(self.db_path)
                 db.row_factory = aiosqlite.Row
-                
-                # 验证表是否存在
+
+                # Verify the table exists
                 async with db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='task_executions'") as cursor:
                     result = await cursor.fetchone()
                     if not result:
-                        # 如果表不存在，重新初始化数据库
-                        print("⚠️ 检测到表不存在，重新初始化数据库...")
+                        # If the table doesn't exist, reinitialize the database
+                        print("⚠️ Table not found, reinitializing database...")
                         await db.close()
                         await self._init_db()
                         db = g._database = await aiosqlite.connect(self.db_path)
                         db.row_factory = aiosqlite.Row
-                        
+
             except Exception as e:
-                print(f"❌ 数据库连接失败: {str(e)}")
+                print(f"❌ Database connection failed: {str(e)}")
                 raise
         return db
 
     async def _close_connection(self, exception):
-        """关闭数据库连接"""
+        """Close the database connection"""
         db = getattr(g, '_database', None)
         if db is not None:
             await db.close()
 
     async def _get_recent_tasks(self, limit=10):
-        """获取最近的任务"""
+        """Get recent tasks"""
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             async with db.execute(
@@ -241,7 +237,7 @@ class QuartCrewServer(CrewServer):
                 return await cursor.fetchall()
 
     async def _get_task_by_id(self, conversation_id):
-        """根据ID获取任务"""
+        """Get a task by ID"""
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             async with db.execute(
@@ -251,7 +247,7 @@ class QuartCrewServer(CrewServer):
                 return await cursor.fetchone()
 
     async def _get_task_logs(self, conversation_id):
-        """获取任务日志"""
+        """Get task logs"""
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
             async with db.execute(
@@ -259,19 +255,19 @@ class QuartCrewServer(CrewServer):
                 (conversation_id,)
             ) as cursor:
                 logs = await cursor.fetchall()
-        
-        # 格式化日志
+
+        # Format the logs
         formatted_logs = []
         for log in logs:
             type_names = {
-                'system': '系统',
-                'agent_input': 'Agent输入',
-                'agent_output': 'Agent输出',
-                'tool_input': 'Tool输入',
-                'tool_output': 'Tool输出'
+                'system': 'System',
+                'agent_input': 'Agent Input',
+                'agent_output': 'Agent Output',
+                'tool_input': 'Tool Input',
+                'tool_output': 'Tool Output'
             }
-            
-            # 安全地获取role_name字段（兼容旧数据）
+
+            # Safely get the role_name field (for backward compatibility with old data)
             try:
                 role_name = log['role_name'] if 'role_name' in log.keys() else None
             except (KeyError, TypeError):
@@ -289,11 +285,11 @@ class QuartCrewServer(CrewServer):
         return formatted_logs
 
     async def _get_queue_status(self):
-        """获取队列状态"""
+        """Get the queue status"""
         running_count = len(self.running_tasks)
         queued_count = len(self.task_queue)
-        
-        # 从数据库获取最新状态
+
+        # Get the latest status from the database
         async with aiosqlite.connect(self.db_path) as db:
             async with db.execute("SELECT COUNT(*) as count FROM task_executions WHERE status = 'running'") as cursor:
                 db_running = await cursor.fetchone()
@@ -313,10 +309,10 @@ class QuartCrewServer(CrewServer):
         }
 
     def _to_beijing_time_str(self, value: Any) -> Optional[str]:
-        """将传入的 UTC/本地时间字符串或datetime转换为北京时间字符串。
-        - 支持 str: 'YYYY-MM-DD HH:MM:SS[.ffffff]' 或 ISO 格式；
-        - 支持 datetime: 有/无 tzinfo;
-        返回格式: 'YYYY-MM-DD HH:MM:SS'
+        """Convert an incoming UTC/local time string or datetime into a Beijing-time string.
+        - Supports str: 'YYYY-MM-DD HH:MM:SS[.ffffff]' or ISO format;
+        - Supports datetime: with or without tzinfo;
+        Return format: 'YYYY-MM-DD HH:MM:SS'
         """
         if value is None:
             return None
@@ -325,7 +321,7 @@ class QuartCrewServer(CrewServer):
             dt = value
         elif isinstance(value, str):
             s = value.strip()
-            # 先尝试常见格式
+            # Try common formats first
             for fmt in ("%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S"):
                 try:
                     dt = datetime.strptime(s, fmt)
@@ -333,9 +329,9 @@ class QuartCrewServer(CrewServer):
                 except Exception:
                     dt = None
             if dt is None:
-                # 退回ISO格式
+                # Fall back to ISO format
                 try:
-                    # 支持末尾Z
+                    # Support a trailing Z
                     if s.endswith('Z'):
                         s = s[:-1]
                         dt = datetime.fromisoformat(s)
@@ -346,18 +342,18 @@ class QuartCrewServer(CrewServer):
         else:
             return str(value)
 
-        # 将有时区信息的时间转换为UTC无tz的时间
+        # Convert timezone-aware values to naive UTC
         if dt.tzinfo is not None and dt.utcoffset() is not None:
             dt_utc = dt - dt.utcoffset()
         else:
-            # 假定数据库的 CURRENT_TIMESTAMP 为UTC
+            # Assume the database's CURRENT_TIMESTAMP is UTC
             dt_utc = dt
 
         bj_dt = dt_utc + timedelta(hours=8)
         return bj_dt.strftime("%Y-%m-%d %H:%M:%S")
 
     def _format_task_row(self, row: aiosqlite.Row) -> Dict[str, Any]:
-        """将任务记录行转换为带北京时间字符串的字典。"""
+        """Convert a task record row into a dict with Beijing-time strings."""
         return {
             'conversation_id': row['conversation_id'],
             'task_description': row['task_description'],
@@ -370,13 +366,13 @@ class QuartCrewServer(CrewServer):
         }
 
     def _setup_routes(self):
-        """设置Quart路由"""
-        
+        """Set up Quart routes"""
+
         @self.app.teardown_appcontext
         async def close_connection(exception):
             await self._close_connection(exception)
 
-        # 统一API错误为JSON，避免返回HTML导致前端解析错误
+        # Return API errors as JSON to avoid HTML responses breaking frontend parsing
         @self.app.errorhandler(404)
         async def handle_404(error):
             if request.path.startswith('/api/'):
@@ -398,7 +394,7 @@ class QuartCrewServer(CrewServer):
         
         @self.app.route('/')
         async def index():
-            """主页"""
+            """Home page"""
             recent_tasks_rows = await self._get_recent_tasks()
             recent_tasks = [self._format_task_row(row) for row in recent_tasks_rows]
             queue_status = await self._get_queue_status()
@@ -409,7 +405,7 @@ class QuartCrewServer(CrewServer):
 
         @self.app.route('/upload', methods=['POST'])
         async def upload_structure():
-            """上传晶体结构文件，返回保存后的绝对路径"""
+            """Upload a crystal structure file, returning the saved absolute path"""
             try:
                 files = await request.files
                 if 'file' not in files:
@@ -433,22 +429,22 @@ class QuartCrewServer(CrewServer):
 
         @self.app.route('/submit', methods=['POST'])
         async def submit_task():
-            """提交任务"""
+            """Submit a task"""
             try:
                 data = await request.get_json()
                 task_description = data.get('task_description', '').strip()
-                
+
                 if not task_description:
                     return jsonify({'error': 'Please enter a valid task description'}), 400
-                
-                # 检查队列是否已满
+
+                # Check whether the queue is full
                 current_queue_size = len(self.task_queue)
                 current_running = len(self.running_tasks)
-                
+
                 if current_queue_size + current_running >= self.max_queue_size + self.max_concurrent_tasks:
-                    return jsonify({'error': f'队列已满，当前运行: {current_running}, 队列中: {current_queue_size}, 最大限制: {self.max_queue_size + self.max_concurrent_tasks}'}), 400
-                
-                # 创建任务记录
+                    return jsonify({'error': f'Queue is full. Currently running: {current_running}, queued: {current_queue_size}, max limit: {self.max_queue_size + self.max_concurrent_tasks}'}), 400
+
+                # Create the task record
                 conversation_id = str(uuid.uuid4())
                 async with aiosqlite.connect(self.db_path) as db:
                     await db.execute(
@@ -456,16 +452,16 @@ class QuartCrewServer(CrewServer):
                         (conversation_id, task_description, TaskStatus.QUEUED.value)
                     )
                     await db.commit()
-                
-                # 添加到队列并尝试处理
+
+                # Add to the queue and try to process it
                 queued_task = QueuedTask(
                     conversation_id=conversation_id,
                     task_description=task_description,
                     created_at=datetime.now()
                 )
                 self.task_queue.append(queued_task)
-                
-                # 异步处理队列
+
+                # Process the queue asynchronously
                 asyncio.create_task(self._process_queue())
                 
                 return jsonify({
@@ -480,15 +476,15 @@ class QuartCrewServer(CrewServer):
 
         @self.app.route('/task/<conversation_id>')
         async def task_detail(conversation_id):
-            """任务详情页面"""
+            """Task detail page"""
             task = await self._get_task_by_id(conversation_id)
             if not task:
                 return "Task not found", 404
-            
+
             logs = await self._get_task_logs(conversation_id)
             recent_tasks_rows = await self._get_recent_tasks()
             recent_tasks = [self._format_task_row(row) for row in recent_tasks_rows]
-            # 任务详情时间转为北京时间
+            # Convert task detail timestamps to Beijing time
             task_dict = {
                 'conversation_id': task['conversation_id'],
                 'task_description': task['task_description'],
@@ -510,7 +506,7 @@ class QuartCrewServer(CrewServer):
 
         @self.app.route('/api/task/<conversation_id>/status')
         async def get_task_status(conversation_id):
-            """获取任务状态API"""
+            """API to get task status"""
             task = await self._get_task_by_id(conversation_id)
             if not task:
                 return jsonify({'error': 'Task not found'}), 404
@@ -523,14 +519,14 @@ class QuartCrewServer(CrewServer):
 
         @self.app.route('/api/task/<conversation_id>/logs')
         async def get_task_logs(conversation_id):
-            """获取任务日志API"""
+            """API to get task logs"""
             task = await self._get_task_by_id(conversation_id)
             if not task:
                 return jsonify({'error': 'Task not found'}), 404
-            
+
             logs = await self._get_task_logs(conversation_id)
-            
-            # 将日志转换为字典格式
+
+            # Convert the logs to dict format
             logs_data = []
             for log in logs:
                 logs_data.append({
@@ -555,7 +551,7 @@ class QuartCrewServer(CrewServer):
 
         @self.app.route('/api/tasks')
         async def get_tasks():
-            """获取任务列表API"""
+            """API to get the task list"""
             try:
                 recent_tasks = await self._get_recent_tasks()
                 tasks_data = []
@@ -574,10 +570,10 @@ class QuartCrewServer(CrewServer):
 
         @self.app.route('/api/queue/status')
         async def get_queue_status_api():
-            """获取队列状态API"""
+            """API to get queue status"""
             try:
                 status = await self._get_queue_status()
-                # 添加队列详情
+                # Add queue details
                 queue_details = []
                 for i, queued_task in enumerate(self.task_queue):
                     queue_details.append({
@@ -594,41 +590,41 @@ class QuartCrewServer(CrewServer):
 
         @self.app.route('/api/files/<conversation_id>/<path:filename>')
         async def serve_task_file(conversation_id, filename):
-            """为特定任务提供文件访问"""
+            """Serve file access for a specific task"""
             from urllib.parse import unquote
-            
+
             try:
-                # 对路径进行分段解码
+                # Decode the path segment by segment
                 path_segments = filename.split('/')
                 decoded_segments = [unquote(segment) for segment in path_segments]
                 decoded_filename = '/'.join(decoded_segments)
-                
-                # 检查是否有绝对路径标记
+
+                # Check for an absolute-path marker
                 is_absolute_path = False
                 if decoded_filename.startswith('__ABS__'):
                     decoded_filename = decoded_filename[7:]
                     is_absolute_path = True
-                
-                # 构建文件路径
+
+                # Build the file path
                 task_dir = os.path.join(self.work_dir, conversation_id)
-                
+
                 if is_absolute_path or (decoded_filename.startswith('/') and self.allow_path):
                     file_path = decoded_filename
                 else:
                     file_path = os.path.join(task_dir, decoded_filename)
-                
-                # 安全检查
+
+                # Security check
                 file_path = os.path.abspath(file_path)
                 task_dir = os.path.abspath(task_dir)
-                
+
                 if not is_absolute_path and not self.allow_path:
                     if not file_path.startswith(task_dir) and not file_path.startswith(self.work_dir):
                         abort(403, description="Access denied: file path not in allowed range")
-                
+
                 if not os.path.exists(file_path):
                     abort(404, description=f"File not found: {decoded_filename}")
-                
-                # 根据文件扩展名设置MIME类型
+
+                # Set the MIME type based on the file extension
                 if decoded_filename.lower().endswith(('.png', '.jpg', '.jpeg', '.gif')):
                     mimetype = 'image/png' if decoded_filename.lower().endswith('.png') else 'image/jpeg'
                 elif decoded_filename.lower().endswith(('.vasp', '.xyz', '.cif')):
@@ -643,7 +639,7 @@ class QuartCrewServer(CrewServer):
 
         @self.app.route('/api/files/<conversation_id>/list')
         async def list_task_files(conversation_id):
-            """列出任务目录中的所有文件"""
+            """List all files in the task directory"""
             from urllib.parse import quote
             
             try:
@@ -666,7 +662,7 @@ class QuartCrewServer(CrewServer):
                         elif filename.lower().endswith(('.txt', '.log', '.out')):
                             file_type = 'text'
                         
-                        # 对路径进行分段编码
+                        # Encode the path segment by segment
                         path_segments = relative_path.split('/')
                         encoded_segments = [quote(segment, safe='') for segment in path_segments]
                         encoded_path = '/'.join(encoded_segments)
@@ -686,39 +682,39 @@ class QuartCrewServer(CrewServer):
 
         @self.app.route('/api/task/<conversation_id>/stop', methods=['POST'])
         async def stop_task(conversation_id):
-            """取消任务API"""
+            """API to cancel a task"""
             try:
-                # 捕获当前已知的fingerprint（若存在）
+                # Capture the currently known fingerprint (if any)
                 known_fingerprint = self._conversation_to_fingerprint.get(conversation_id)
-                # 检查任务是否存在
+                # Check whether the task exists
                 task = await self._get_task_by_id(conversation_id)
                 if not task:
-                    return jsonify({'error': '任务未找到', 'conversation_id': conversation_id, 'fingerprint': known_fingerprint}), 404
-                
-                # 若fingerprint暂不可用且任务处于运行态，短暂等待映射建立以缓解竞态
+                    return jsonify({'error': 'Task not found', 'conversation_id': conversation_id, 'fingerprint': known_fingerprint}), 404
+
+                # If the fingerprint isn't available yet and the task is running, wait briefly for the mapping to be established to reduce the race window
                 if not known_fingerprint and task['status'] == 'running':
                     for _ in range(10):
                         await asyncio.sleep(0.05)
                         known_fingerprint = self._conversation_to_fingerprint.get(conversation_id)
                         if known_fingerprint:
                             break
-                
-                # 检查任务状态
+
+                # Check the task status
                 if task['status'] not in ['running', 'queued']:
-                    return jsonify({'error': f'任务状态为 {task["status"]}，无法取消', 'conversation_id': conversation_id, 'fingerprint': known_fingerprint}), 400
-                
+                    return jsonify({'error': f'Task status is {task["status"]}, cannot cancel', 'conversation_id': conversation_id, 'fingerprint': known_fingerprint}), 400
+
                 success = False
                 message = ""
-                
-                # 如果任务在队列中，直接从队列移除
+
+                # If the task is still queued, remove it from the queue directly
                 if task['status'] == 'queued':
                     self.task_queue = [t for t in self.task_queue if t.conversation_id != conversation_id]
                     success = True
-                    message = f"任务已从队列中移除 (conversation_id={conversation_id}, fingerprint={known_fingerprint})"
-                    # 移除可能存在的映射
+                    message = f"Task removed from queue (conversation_id={conversation_id}, fingerprint={known_fingerprint})"
+                    # Remove the mapping if it exists
                     self._unregister_mapping_by_conversation(conversation_id)
-                
-                # 如果任务正在运行，取消运行中的任务
+
+                # If the task is running, cancel the running task
                 elif conversation_id in self.running_tasks:
                     running_task = self.running_tasks[conversation_id]
                     running_task.cancel()
@@ -728,34 +724,34 @@ class QuartCrewServer(CrewServer):
                         pass
                     self.running_tasks.pop(conversation_id, None)
                     success = True
-                    message = f"运行中的任务已取消 (conversation_id={conversation_id}, fingerprint={known_fingerprint})"
-                    
-                    # 提取并取消SLURM任务
+                    message = f"Running task cancelled (conversation_id={conversation_id}, fingerprint={known_fingerprint})"
+
+                    # Extract and cancel SLURM jobs
                     calc_ids = await self._extract_calc_ids_from_logs(conversation_id)
                     if calc_ids:
                         try:
                             cancel_results = await self._cancel_slurm_job(calc_ids)
-                            # 优先使用已捕获的fingerprint进行日志记录
+                            # Prefer the already-captured fingerprint for logging
                             if known_fingerprint:
-                                self.system_log(f"SLURM任务取消结果: {cancel_results}", known_fingerprint)
+                                self.system_log(f"SLURM job cancellation result: {cancel_results}", known_fingerprint)
                             else:
-                                # 无映射则直接按对话ID记录
+                                # Without a mapping, log directly against the conversation ID
                                 timestamp = datetime.now().strftime("%H:%M:%S")
-                                log_entry = f"[{timestamp}] SLURM任务取消结果: {cancel_results}"
+                                log_entry = f"[{timestamp}] SLURM job cancellation result: {cancel_results}"
                                 self._schedule_log_to_db(conversation_id, 'system', log_entry, role_name='system')
                         except Exception as e:
                             if known_fingerprint:
-                                self.system_log(f"取消SLURM任务时出错: {str(e)}", known_fingerprint)
+                                self.system_log(f"Error while cancelling SLURM job: {str(e)}", known_fingerprint)
                             else:
                                 timestamp = datetime.now().strftime("%H:%M:%S")
-                                log_entry = f"[{timestamp}] 取消SLURM任务时出错: {str(e)}"
+                                log_entry = f"[{timestamp}] Error while cancelling SLURM job: {str(e)}"
                                 self._schedule_log_to_db(conversation_id, 'system', log_entry, role_name='system')
 
-                    # 取消成功或移出队列后，解除映射
+                    # Unregister the mapping after successful cancellation or removal from the queue
                     self._unregister_mapping_by_conversation(conversation_id)
-                
+
                 if success:
-                    # 更新数据库状态
+                    # Update the database status
                     async with aiosqlite.connect(self.db_path) as db:
                         await db.execute(
                             'UPDATE task_executions SET status = ?, completed_at = CURRENT_TIMESTAMP, error_message = ? WHERE conversation_id = ?',
@@ -771,7 +767,7 @@ class QuartCrewServer(CrewServer):
                 })
                 
             except Exception as e:
-                error_msg = f"取消任务失败: {str(e)} (conversation_id={conversation_id}, fingerprint={known_fingerprint})"
+                error_msg = f"Failed to cancel task: {str(e)} (conversation_id={conversation_id}, fingerprint={known_fingerprint})"
                 if known_fingerprint:
                     self.system_log(error_msg, known_fingerprint)
                 else:
@@ -781,80 +777,80 @@ class QuartCrewServer(CrewServer):
                 return jsonify({'error': error_msg, 'conversation_id': conversation_id, 'fingerprint': known_fingerprint}), 500
 
     async def _process_queue(self):
-        """处理任务队列"""
+        """Process the task queue"""
         while self.task_queue and len(self.running_tasks) < self.max_concurrent_tasks:
-            # 获取信号量
+            # Acquire the semaphore
             if self.task_semaphore.locked():
                 break
-                
+
             queued_task = self.task_queue.pop(0)
-            
-            # 创建并启动异步任务
+
+            # Create and launch the async task
             async_task = asyncio.create_task(
                 self._execute_crew_task_async(queued_task.conversation_id, queued_task.task_description)
             )
             self.running_tasks[queued_task.conversation_id] = async_task
-            
-            # 不等待任务完成，继续处理队列
+
+            # Don't wait for the task to finish, keep processing the queue
             asyncio.create_task(self._monitor_task(queued_task.conversation_id, async_task))
 
     async def _monitor_task(self, conversation_id: str, task: asyncio.Task):
-        """监控任务完成"""
+        """Monitor task completion"""
         try:
             await task
         except asyncio.CancelledError:
             fingerprint = self._conversation_to_fingerprint.get(conversation_id)
             if fingerprint:
-                self.system_log(f"任务已取消", fingerprint)
+                self.system_log(f"Task cancelled", fingerprint)
             else:
                 timestamp = datetime.now().strftime("%H:%M:%S")
-                log_entry = f"[{timestamp}] 任务 {conversation_id} 被取消"
+                log_entry = f"[{timestamp}] Task {conversation_id} was cancelled"
                 self._schedule_log_to_db(conversation_id, 'system', log_entry, role_name='system')
         except Exception as e:
             fingerprint = self._conversation_to_fingerprint.get(conversation_id)
             if fingerprint:
-                self.system_log(f"任务执行出错: {str(e)}", fingerprint)
+                self.system_log(f"Error during task execution: {str(e)}", fingerprint)
             else:
                 timestamp = datetime.now().strftime("%H:%M:%S")
-                log_entry = f"[{timestamp}] 任务 {conversation_id} 执行出错: {str(e)}"
+                log_entry = f"[{timestamp}] Error during execution of task {conversation_id}: {str(e)}"
                 self._schedule_log_to_db(conversation_id, 'system', log_entry, role_name='system')
         finally:
-            # 清理运行中的任务记录
+            # Clean up the running task record
             if conversation_id in self.running_tasks:
                 del self.running_tasks[conversation_id]
-            # 解除指纹映射
+            # Unregister the fingerprint mapping
             self._unregister_mapping_by_conversation(conversation_id)
-            
-            # 继续处理队列
+
+            # Continue processing the queue
             await self._process_queue()
 
     async def _extract_calc_ids_from_logs(self, conversation_id):
-        """从任务日志中提取计算任务ID"""
+        """Extract calculation task IDs from task logs"""
         calc_ids = []
         try:
             logs = await self._get_task_logs(conversation_id)
-            
+
             for log in logs:
                 content = log['content']
-                
-                # 从tool_output中查找calculation_id
+
+                # Look for calculation_id in tool_output
                 if log['type'] == 'tool_output':
                     try:
-                        # 尝试解析JSON内容
+                        # Try to parse the content as JSON
                         json_match = re.search(r'\{.*\}', content, re.DOTALL)
                         if json_match:
                             tool_data = json.loads(json_match.group())
                             if isinstance(tool_data, dict):
-                                # 查找calculation_id字段
+                                # Look for the calculation_id field
                                 if 'calculation_id' in tool_data:
                                     calc_ids.append(tool_data['calculation_id'])
-                                # 也检查嵌套结构中的calculation_id
+                                # Also check for calculation_id in nested structures
                                 elif isinstance(tool_data, dict):
                                     for key, value in tool_data.items():
                                         if isinstance(value, dict) and 'calculation_id' in value:
                                             calc_ids.append(value['calculation_id'])
                     except (json.JSONDecodeError, AttributeError):
-                        # 如果JSON解析失败，使用正则表达式查找
+                        # If JSON parsing fails, fall back to regex
                         calc_id_patterns = [
                             r'"calculation_id":\s*"([^"]+)"',
                             r"'calculation_id':\s*'([^']+)'",
@@ -863,25 +859,25 @@ class QuartCrewServer(CrewServer):
                         for pattern in calc_id_patterns:
                             matches = re.findall(pattern, content, re.IGNORECASE)
                             calc_ids.extend(matches)
-                
-                # 从其他日志类型中查找UUID格式的计算ID
+
+                # Look for UUID-formatted calculation IDs in other log types
                 uuid_pattern = r'[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}'
                 uuid_matches = re.findall(uuid_pattern, content, re.IGNORECASE)
-                
-                # 过滤掉对话ID本身，只保留计算ID
+
+                # Filter out the conversation ID itself, keeping only calculation IDs
                 for match in uuid_matches:
                     if match != conversation_id and match not in calc_ids:
                         calc_ids.append(match)
-            
-            # 去重并返回
+
+            # Deduplicate and return
             return list(set(calc_ids))
-            
+
         except Exception as e:
-            self.system_log(f"提取计算ID时出错: {str(e)}")
+            self.system_log(f"Error while extracting calculation IDs: {str(e)}")
             return []
 
     def _run_crew_kickoff_thread(self, local_dir, task_description, result_container: Dict[str, Any], conversation_id: str) -> None:
-        """在独立线程中执行 crew.kickoff 并记录线程ID与结果。"""
+        """Execute crew.kickoff in a dedicated thread and record the thread ID and result."""
         self._crew_thread_ids[conversation_id] = threading.get_ident()
         result_container['crew_constructed'] = False
         result_container['crew_kickoff_called'] = False
@@ -899,12 +895,12 @@ class QuartCrewServer(CrewServer):
             self.system_log("Initializing crew...")
             crew = self.generator.crew(local_dir)
             result_container['crew_constructed'] = True
-            # 注册映射关系（先注册再记录日志，避免未映射时fingerprint为None）
+            # Register the mapping (register before logging so fingerprint is never None when unmapped)
             self._register_mapping(conversation_id, crew.fingerprint.uuid_str)
             self.system_log("Registered mapping", crew.fingerprint.uuid_str)
             self.system_log("Creating user task...", crew.fingerprint.uuid_str)
-            
-            # 创建任务
+
+            # Create the task
             task = Task(
                 description=task_description,
                 # expected_output="A detailed report, including the execution process, calculation results, and the location of the drawn charts.",
@@ -933,8 +929,8 @@ class QuartCrewServer(CrewServer):
                 pass
 
     def _inject_exception_into_thread(self, thread_id: int, exc_type=SystemExit) -> bool:
-        """向目标线程异步注入异常以尝试强制结束。
-        返回 True 表示已注入，False 表示失败或回滚。
+        """Asynchronously inject an exception into the target thread to try to force it to stop.
+        Returns True if the injection succeeded, False if it failed or was rolled back.
         """
         try:
             res = ctypes.pythonapi.PyThreadState_SetAsyncExc(ctypes.c_long(thread_id), ctypes.py_object(exc_type))
@@ -946,7 +942,7 @@ class QuartCrewServer(CrewServer):
             return False
 
     async def _stop_and_join_crew_thread(self, conversation_id: str, timeout: float = 5.0) -> bool:
-        """尝试强制结束并等待指定会话对应的 crew 执行线程退出。"""
+        """Try to forcibly stop and wait for the crew execution thread for the given session to exit."""
         thread = self._running_threads.get(conversation_id)
         thread_id = self._crew_thread_ids.get(conversation_id)
         stopped = False
@@ -964,10 +960,10 @@ class QuartCrewServer(CrewServer):
         return stopped
 
     async def _execute_crew_task_async(self, conversation_id, task_description):
-        """异步执行crew任务"""
+        """Asynchronously execute a crew task"""
         async with self.task_semaphore:
             try:
-                # 更新任务状态
+                # Update the task status
                 async with aiosqlite.connect(self.db_path) as conn:
                     await conn.execute(
                         'UPDATE task_executions SET status = ?, started_at = CURRENT_TIMESTAMP WHERE conversation_id = ?',
@@ -975,20 +971,20 @@ class QuartCrewServer(CrewServer):
                     )
                     await conn.commit()
 
-                # 系统日志（直接按对话ID记录，fingerprint尚未生成）
+                # System log (logged directly against the conversation ID, since the fingerprint doesn't exist yet)
                 timestamp = datetime.now().strftime("%H:%M:%S")
-                log_entry = f"[{timestamp}] 对话id:{conversation_id}"
+                log_entry = f"[{timestamp}] conversation id:{conversation_id}"
                 self._schedule_log_to_db(conversation_id, 'system', log_entry, role_name='system')
-                
-                # 创建工作目录
+
+                # Create the working directory
                 local_dir = os.path.join(self.work_dir, conversation_id)
                 os.makedirs(local_dir, exist_ok=True)
                 old_cwd = os.getcwd()
                 os.chdir(local_dir)
-                
+
                 try:
-                    # 初始化并建立映射
-                    # 在线程中执行同步 kickoff，便于后续强制停止
+                    # Initialize and establish the mapping
+                    # Run the synchronous kickoff in a thread, to allow forcibly stopping it later
                     result_container: Dict[str, Any] = {}
                     thread = threading.Thread(
                         target=self._run_crew_kickoff_thread,
@@ -998,15 +994,15 @@ class QuartCrewServer(CrewServer):
                     )
                     self._running_threads[conversation_id] = thread
                     thread.start()
-                    # 异步轮询等待线程结束
+                    # Asynchronously poll while waiting for the thread to finish
                     while thread.is_alive():
                         await asyncio.sleep(0.1)
-                    # 线程结束后获取结果或异常
+                    # Once the thread finishes, retrieve the result or exception
                     if 'error' in result_container:
                         raise result_container['error']
                     result = result_container.get('result')
-                    
-                    # 更新任务状态
+
+                    # Update the task status
                     async with aiosqlite.connect(self.db_path) as conn:
                         await conn.execute(
                             'UPDATE task_executions SET status = ?, completed_at = CURRENT_TIMESTAMP, result = ? WHERE conversation_id = ?',
@@ -1015,10 +1011,10 @@ class QuartCrewServer(CrewServer):
                         await conn.commit()
                 finally:
                     os.chdir(old_cwd)
-                         
+
             except asyncio.CancelledError:
-                # 任务被取消
-                # 强制停止后台 crew 执行线程并等待退出
+                # Task was cancelled
+                # Forcibly stop the background crew execution thread and wait for it to exit
                 try:
                     await self._stop_and_join_crew_thread(conversation_id)
                 except Exception as e:
@@ -1032,16 +1028,16 @@ class QuartCrewServer(CrewServer):
                 raise
             except Exception as e:
                 error_msg = f"Error occurred during execution: {str(e)}"
-                
-                # 记录错误
+
+                # Log the error
                 async with aiosqlite.connect(self.db_path) as conn:
                     await conn.execute(
                         'UPDATE task_executions SET status = ?, completed_at = CURRENT_TIMESTAMP, error_message = ? WHERE conversation_id = ?',
                         ('failed', error_msg, conversation_id)
                     )
                     await conn.commit()
-                
-                # 根据映射记录错误日志
+
+                # Log the error against the mapped fingerprint if available
                 fingerprint = self._conversation_to_fingerprint.get(conversation_id)
                 if fingerprint:
                     self.system_log(error_msg, fingerprint)
@@ -1050,7 +1046,7 @@ class QuartCrewServer(CrewServer):
                     log_entry = f"[{timestamp}] {error_msg}"
                     self._schedule_log_to_db(conversation_id, 'system', log_entry, role_name='system')
             finally:
-                # 完成日志
+                # Completion log
                 fingerprint = self._conversation_to_fingerprint.get(conversation_id)
                 if result_container.get('crew_constructed'):
                     try:
@@ -1064,33 +1060,33 @@ class QuartCrewServer(CrewServer):
                     log_entry = f"[{timestamp}] Mission ended"
                     self._schedule_log_to_db(conversation_id, 'system', log_entry, role_name='system')
 
-    # CrewServer接口实现（同步版本）
+    # CrewServer interface implementation (synchronous version)
     def system_log(self, message: str, crew_fingerprint: str = None):
-        """实现同步系统日志方法（内部异步写库）"""
+        """Synchronous system log implementation (writes to the database internally, asynchronously)"""
         timestamp = datetime.now().strftime("%H:%M:%S")
         log_entry = f"[{timestamp}] {message}"
-        
-        # 通过指纹映射到会话ID
+
+        # Resolve the conversation ID via the fingerprint mapping
         conversation_id = self._get_conversation_id_for_fingerprint(crew_fingerprint) if crew_fingerprint else None
         if conversation_id:
             self._schedule_log_to_db(conversation_id, 'system', log_entry, role_name='system')
 
     def agent_input(self, agent_role: str, message: str, crew_fingerprint: str = None):
-        """实现同步Agent输入方法（内部异步写库）"""
+        """Synchronous agent-input implementation (writes to the database internally, asynchronously)"""
         log_content = f"[{agent_role}] {message}"
         conversation_id = self._get_conversation_id_for_fingerprint(crew_fingerprint) if crew_fingerprint else None
         if conversation_id:
             self._schedule_log_to_db(conversation_id, 'agent_input', log_content, role_name=agent_role)
 
     def agent_output(self, agent_role: str, message: str, crew_fingerprint: str = None):
-        """实现同步Agent输出方法（内部异步写库）"""
+        """Synchronous agent-output implementation (writes to the database internally, asynchronously)"""
         log_content = f"[{agent_role}] {message}"
         conversation_id = self._get_conversation_id_for_fingerprint(crew_fingerprint) if crew_fingerprint else None
         if conversation_id:
             self._schedule_log_to_db(conversation_id, 'agent_output', log_content, role_name=agent_role)
 
     def tool_input(self, tool_name: str, message: Any, crew_fingerprint: str = None):
-        """实现同步Tool输入方法（内部异步写库）"""
+        """Synchronous tool-input implementation (writes to the database internally, asynchronously)"""
         if isinstance(message, (dict, list)):
             log_content = json.dumps(message, ensure_ascii=False)
         else:
@@ -1104,7 +1100,7 @@ class QuartCrewServer(CrewServer):
             self._schedule_log_to_db(conversation_id, 'tool_input', log_content, role_name=tool_name)
 
     def tool_output(self, tool_name: str, message: Any, crew_fingerprint: str = None):
-        """实现同步Tool输出方法（内部异步写库）"""
+        """Synchronous tool-output implementation (writes to the database internally, asynchronously)"""
         if isinstance(message, (dict, list)):
             log_content = json.dumps(message, ensure_ascii=False)
         else:
@@ -1118,11 +1114,11 @@ class QuartCrewServer(CrewServer):
             self._schedule_log_to_db(conversation_id, 'tool_output', log_content, role_name=tool_name)
 
     def _schedule_log_to_db(self, conversation_id, log_type, content, role_name=None):
-        """在事件循环中的单一日志队列排队，保证入库顺序与调用顺序一致。"""
+        """Enqueue onto the single in-event-loop log queue, ensuring write order matches call order."""
         self._enqueue_log_event(conversation_id, log_type, content, role_name)
 
     async def _log_worker(self):
-        """单线程异步日志写库工作协程，严格按队列顺序写入。"""
+        """Single-threaded async log-writing worker coroutine, writing strictly in queue order."""
         if self._log_queue is None:
             self._log_queue = asyncio.Queue()
         try:
@@ -1142,10 +1138,10 @@ class QuartCrewServer(CrewServer):
             pass
 
     def _enqueue_log_event(self, conversation_id, log_type, content, role_name=None):
-        """将日志事件投递到主事件循环的日志队列。
-        - 在同一事件循环内，直接 put_nowait 以保持调用顺序；
-        - 从其他线程调用时，使用 run_coroutine_threadsafe 投递，尽可能保持先后顺序；
-        - 如队列未初始化，兜底为同步直写（初始化之前很少发生）。
+        """Deliver a log event to the main event loop's log queue.
+        - Within the same event loop, use put_nowait directly to preserve call order;
+        - When called from another thread, deliver via run_coroutine_threadsafe to preserve ordering as much as possible;
+        - If the queue isn't initialized yet, fall back to a synchronous direct write (rarely happens before initialization).
         """
         if self._log_queue is not None and self._event_loop is not None:
             try:
@@ -1163,7 +1159,7 @@ class QuartCrewServer(CrewServer):
                     self._event_loop
                 )
         else:
-            # 兜底：队列未就绪时同步直写，避免日志丢失
+            # Fallback: write synchronously when the queue isn't ready yet, to avoid losing log entries
             import sqlite3
             try:
                 with sqlite3.connect(self.db_path) as conn:
@@ -1176,7 +1172,7 @@ class QuartCrewServer(CrewServer):
                 print(f"Direct log fallback failed: {e}")
 
     def _register_mapping(self, conversation_id: str, crew_fingerprint: str) -> None:
-        """注册 conversation_id 与 crew_fingerprint 映射。"""
+        """Register the conversation_id <-> crew_fingerprint mapping."""
         print(f"[Mapping] register {conversation_id} -> {crew_fingerprint}")
         with self._mapping_lock:
             self._conversation_to_fingerprint[conversation_id] = crew_fingerprint
@@ -1184,7 +1180,7 @@ class QuartCrewServer(CrewServer):
         print(f"[Mapping] size conv2fp={len(self._conversation_to_fingerprint)}, fp2conv={len(self._fingerprint_to_conversation)}")
 
     def _unregister_mapping_by_conversation(self, conversation_id: str) -> None:
-        """根据 conversation_id 解除映射。"""
+        """Unregister the mapping by conversation_id."""
         with self._mapping_lock:
             print(f"[Mapping] unregister by conversation {conversation_id}")
             crew_fingerprint = self._conversation_to_fingerprint.pop(conversation_id, None)
@@ -1193,14 +1189,14 @@ class QuartCrewServer(CrewServer):
         print(f"[Mapping] size conv2fp={len(self._conversation_to_fingerprint)}, fp2conv={len(self._fingerprint_to_conversation)}")
 
     def _get_conversation_id_for_fingerprint(self, crew_fingerprint: Optional[str]) -> Optional[str]:
-        """通过 crew_fingerprint 查找 conversation_id。"""
+        """Look up the conversation_id via crew_fingerprint."""
         if not crew_fingerprint:
             return None
         with self._mapping_lock:
             return self._fingerprint_to_conversation.get(crew_fingerprint)
 
     async def _log_to_db_async(self, conversation_id, log_type, content, role_name=None):
-        """异步将日志记录到数据库"""
+        """Asynchronously write a log entry to the database"""
         async with aiosqlite.connect(self.db_path) as conn:
             await conn.execute(
                 'INSERT INTO activity_logs (conversation_id, type, role_name, content) VALUES (?, ?, ?, ?)',
@@ -1209,7 +1205,7 @@ class QuartCrewServer(CrewServer):
             await conn.commit()
 
     async def _cancel_slurm_job(self, calc_ids: list[str]):
-        """异步取消SLURM任务"""
+        """Asynchronously cancel SLURM jobs"""
         async with Client(self.config["mcp_server"]["url"]) as client:
             tool_result = await client.call_tool("cancel_slurm_job", {"calc_ids": calc_ids})
         if tool_result.data is None:
@@ -1218,33 +1214,33 @@ class QuartCrewServer(CrewServer):
             return tool_result.data
 
     async def launch_async(self, host="127.0.0.1", port=5000, debug=False, **kwargs):
-        """异步启动Quart应用"""
-        print(f"🚀 启动 {self.title}...")
-        print(f"💼 工作目录: {self.work_dir}")
-        print(f"🗄️ 数据库: {self.db_path}")
-        print(f"🌐 服务器地址: http://{host}:{port}")
-        print(f"⚡ 最大并发任务数: {self.max_concurrent_tasks}")
-        print(f"📋 最大队列大小: {self.max_queue_size}")
+        """Asynchronously launch the Quart app"""
+        print(f"🚀 Starting {self.title}...")
+        print(f"💼 Working directory: {self.work_dir}")
+        print(f"🗄️ Database: {self.db_path}")
+        print(f"🌐 Server address: http://{host}:{port}")
+        print(f"⚡ Max concurrent tasks: {self.max_concurrent_tasks}")
+        print(f"📋 Max queue size: {self.max_queue_size}")
         print("=" * 50)
-        print("✨ Quart Async Crew AI 服务器")
-        print("📝 并行任务、📋 队列管理、🔍 实时更新")
+        print("✨ Quart Async Crew AI Server")
+        print("📝 Parallel tasks, 📋 queue management, 🔍 live updates")
         print("=" * 50)
-        
-        # 初始化数据库
+
+        # Initialize the database
         await self._init_db()
-        
-        # 初始化日志队列与工作协程（在主事件循环中）
+
+        # Initialize the log queue and worker coroutine (inside the main event loop)
         self._event_loop = asyncio.get_running_loop()
         self._log_queue = asyncio.Queue()
         self._log_worker_task = asyncio.create_task(self._log_worker())
-        
-        # 设置会话上下文
+
+        # Set the conversation context
         async def set_conversation_context(conversation_id):
             old_id = getattr(self, '_current_conversation_id', None)
             self._current_conversation_id = conversation_id
             return old_id
-        
-        # 修改执行任务方法以设置上下文
+
+        # Wrap the task execution method to set the context
         original_execute = self._execute_crew_task_async
         async def execute_with_context(conversation_id, task_description):
             old_id = await set_conversation_context(conversation_id)
@@ -1252,19 +1248,19 @@ class QuartCrewServer(CrewServer):
                 await original_execute(conversation_id, task_description)
             finally:
                 self._current_conversation_id = old_id
-        
+
         self._execute_crew_task_async = execute_with_context
-        
+
         try:
             await self.app.run_task(host=host, port=port, debug=debug, **kwargs)
         except KeyboardInterrupt:
-            print("\n🛑 服务器已停止。")
+            print("\n🛑 Server stopped.")
 
     def get_app(self):
-        """获取Quart应用对象"""
+        """Get the Quart app object"""
         return self.app
 
-    # 同步启动方法（兼容性）
+    # Synchronous launch method (for compatibility)
     def launch(self, host="127.0.0.1", port=5000, debug=False, **kwargs):
-        """启动服务器（同步包装）"""
+        """Launch the server (synchronous wrapper)"""
         asyncio.run(self.launch_async(host, port, debug, **kwargs))

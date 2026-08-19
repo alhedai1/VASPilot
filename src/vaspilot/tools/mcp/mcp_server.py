@@ -1,28 +1,26 @@
 import os
 from pathlib import Path
-from typing import Dict, Any, Optional, List, Union
+from typing import Dict, Any, Optional, List
 from .python_plot import safe_execute_plot_code
 import uuid
-from fastmcp import FastMCP, Context
+from fastmcp import FastMCP
 from pymatgen.core import Structure
 from pymatgen.io.vasp import Kpoints
 from ase.dft.kpoints import BandPath
 import yaml
 import math
 import numpy as np
-import pickle
 from .vasp_calculate import vasp_relaxation, vasp_scf, vasp_nscf, check_status, cancel_slurm_job
 from .struct_tools import search_materials_project, analyze_crystal_structure, create_crystal_structure, make_supercell, rotate_structure, symmetrize_structure, scale_structure
-from pydantic import BaseModel, Field
 from .sqlite_database import VaspCalculationDB
 def main(config_path: str = None, port: int = 8933, host: str = "0.0.0.0"):
-    
-    # 加载配置文件
+
+    # Load the config file
     if config_path is None:
         current_dir = Path(__file__).parent
         project_root = current_dir.parent.parent.parent.parent
         config_path = f"{project_root}/configs/mcp_config.yaml"
-    
+
     with open(config_path, "r") as f:
         settings = yaml.safe_load(f)
 
@@ -31,22 +29,22 @@ def main(config_path: str = None, port: int = 8933, host: str = "0.0.0.0"):
     mp_api_key = settings['mp_api_key']
     structure_path = settings['structure_path']
 
-    # 初始化SQLite数据库
+    # Initialize the SQLite database
     db = VaspCalculationDB(db_path=db_path)
 
     mcp = FastMCP("VASP Agent")
 
     def write_record(calculation_id: str, data: dict):
-        """写入计算记录到SQLite数据库"""
+        """Write a calculation record to the SQLite database"""
         db.write_record(calculation_id, data)
         return
 
     def read_record(calculation_id: str):
-        """从SQLite数据库读取计算记录"""
+        """Read a calculation record from the SQLite database"""
         return db.read_record(calculation_id)
 
     def extract_calculation_data(calculation_ids: List[str]) -> Dict[str, Any]:
-        """从计算记录中提取数据"""
+        """Extract data from calculation records"""
         data = {}
         for calc_id in calculation_ids:
             record = read_record(calc_id)
@@ -56,8 +54,20 @@ def main(config_path: str = None, port: int = 8933, host: str = "0.0.0.0"):
                 data[calc_id] = None
         return data
 
+    def _to_json_safe(value):
+        """Recursively convert numpy scalars/arrays to native Python types so MCP tool
+        output (which is validated against a JSON outputSchema) can be serialized."""
+        if isinstance(value, np.ndarray):
+            return value.tolist()
+        if isinstance(value, np.generic):
+            return value.item()
+        if isinstance(value, dict):
+            return {str(k): _to_json_safe(v) for k, v in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [_to_json_safe(v) for v in value]
+        return value
+
     def extract_llm_friendly_result(data: Dict[str, Any]) -> Dict[str, Any]:
-        llm_friendly_result = {}
         llm_friendly_result = {
             "status": data.get("status", "unknown"),
             "error": data.get("error"),
@@ -65,6 +75,7 @@ def main(config_path: str = None, port: int = 8933, host: str = "0.0.0.0"):
             "calculate_path": data.get("calculate_path"),
             "calc_type": data.get("calc_type"),
         }
+
         if data.get("calc_type") == "relaxation":
             llm_friendly_result.update({
                 "total_energy": data.get("total_energy"),
@@ -72,6 +83,7 @@ def main(config_path: str = None, port: int = 8933, host: str = "0.0.0.0"):
                 "stress": data.get("stress"),
                 "ionic_steps": data.get("ionic_steps")
             })
+
         elif data.get("calc_type") == "scf":
             llm_friendly_result.update({
                 "total_energy": data.get("total_energy"),
@@ -79,13 +91,16 @@ def main(config_path: str = None, port: int = 8933, host: str = "0.0.0.0"):
                 "band_gap": data.get("band_gap"),
                 "is_metal": data.get("is_metal")
             })
+
         elif data.get("calc_type") == "nscf":
-                llm_friendly_result.update({
-                    "efermi": data.get("efermi"),
-                    "band_gap": data.get("band_gap"),
-                    "is_metal": data.get("is_metal")
-                })
-        return llm_friendly_result
+            llm_friendly_result.update({
+                "efermi": data.get("efermi"),
+                "band_gap": data.get("band_gap"),
+                "is_metal": data.get("is_metal")
+            })
+
+        return _to_json_safe(llm_friendly_result)
+
     @mcp.tool(name="vasp_relaxation")
     async def vasp_relaxation_tool(structure_path: str, incar_tags: Optional[Dict] = None, kpoint_num: Optional[tuple[int, int, int]] = None, potcar_map: Optional[Dict] = None) -> Dict[str, Any]:
         """
@@ -104,9 +119,9 @@ def main(config_path: str = None, port: int = 8933, host: str = "0.0.0.0"):
             - error: Error message, if any
             - status: Job status ("pending"/"failed")
         """
-        # 转换输入参数
-        
-        # 生成随机UUID
+        # Convert input parameters
+
+        # Generate a random UUID
         calculation_id = str(uuid.uuid4())
         struct = Structure.from_file(structure_path)
         if kpoint_num is None:
@@ -118,8 +133,8 @@ def main(config_path: str = None, port: int = 8933, host: str = "0.0.0.0"):
         incar.update(settings['VASP_default_INCAR']['relaxation'])
         if incar_tags is not None:
             incar.update(incar_tags)
-        
-        # 执行计算
+
+        # Run the calculation
         result = vasp_relaxation(
             calculation_id=calculation_id,
             work_dir=settings['work_dir'],
@@ -129,8 +144,8 @@ def main(config_path: str = None, port: int = 8933, host: str = "0.0.0.0"):
             attachment_path=attachment_path,
             potcar_map=potcar_map
         )
-        
-        # 保存记录
+
+        # Save the record
         result['calculation_id'] = calculation_id
         write_record(calculation_id, result)
         
@@ -164,9 +179,9 @@ def main(config_path: str = None, port: int = 8933, host: str = "0.0.0.0"):
             - error: Error message, if any
             - status: Job status ("pending"/"failed")
         """
-        # 转换输入参数
-        
-        # 生成随机UUID
+        # Convert input parameters
+
+        # Generate a random UUID
         calculation_id = str(uuid.uuid4())
         if restart_id is not None:
             restart_record = read_record(restart_id)
@@ -198,7 +213,7 @@ def main(config_path: str = None, port: int = 8933, host: str = "0.0.0.0"):
         if incar_tags is not None:
             incar.update(incar_tags)
         
-        # 执行计算
+        # Run the calculation
         result = vasp_scf(
             calculation_id=calculation_id,
             work_dir=settings['work_dir'],
@@ -210,8 +225,8 @@ def main(config_path: str = None, port: int = 8933, host: str = "0.0.0.0"):
             attachment_path=attachment_path,
             potcar_map=potcar_map
         )
-        
-        # 保存记录
+
+        # Save the record
         result['calculation_id'] = calculation_id
         result['soc'] = soc
         result['incar_tags'] = incar_tags
@@ -251,10 +266,10 @@ def main(config_path: str = None, port: int = 8933, host: str = "0.0.0.0"):
             - error: Error message, if any
             - status: Job status ("pending"/"failed")
         """
-        # 生成随机UUID
+        # Generate a random UUID
         calculation_id = str(uuid.uuid4())
         
-        # 获取结构和前序计算文件
+        # Get the structure and preceding calculation files
         scf_record = read_record(restart_id)
         if scf_record is None:
             return {"success": False, "error": f"SCF record {restart_id} not found"}
@@ -262,7 +277,7 @@ def main(config_path: str = None, port: int = 8933, host: str = "0.0.0.0"):
         chgcar_path = os.path.join(scf_record['calculate_path'], "CHGCAR")
         wavecar_path = os.path.join(scf_record['calculate_path'], "WAVECAR")
         
-        # 设置k点路径
+        # Set the k-point path
         from pymatgen.symmetry.bandstructure import HighSymmKpath
         kpath_obj = HighSymmKpath(struct)
         if kpath_obj.kpath is None:
@@ -270,10 +285,10 @@ def main(config_path: str = None, port: int = 8933, host: str = "0.0.0.0"):
 
         n_kpoints = 16 if n_kpoints is None else n_kpoints
         if kpath is None:
-            # 使用pymatgen自动生成的高对称路径
+            # Use the auto-generated high-symmetry path from pymatgen
             kpts = Kpoints.automatic_linemode(n_kpoints, kpath_obj)
         else:
-            # 使用用户指定的路径
+            # Use the user-specified path
             kpts_ase: BandPath = struct.to_ase_atoms().get_cell().bandpath(kpath, npoints=n_kpoints, eps=1e-2)
             high_sym_points = []
             labels = []
@@ -296,7 +311,7 @@ def main(config_path: str = None, port: int = 8933, host: str = "0.0.0.0"):
                 coord_type="Reciprocal"
             )
         
-        # 设置INCAR
+        # Set INCAR
         incar = {}
         if soc:
             incar.update(settings['VASP_default_INCAR']['nscf_soc'])
@@ -305,7 +320,7 @@ def main(config_path: str = None, port: int = 8933, host: str = "0.0.0.0"):
         if incar_tags is not None:
             incar.update(incar_tags)
         
-        # 执行计算
+        # Run the calculation
         result = vasp_nscf(
             calculation_id=calculation_id,
             work_dir=settings['work_dir'],
@@ -317,8 +332,8 @@ def main(config_path: str = None, port: int = 8933, host: str = "0.0.0.0"):
             attachment_path=attachment_path,
             potcar_map=potcar_map
         )
-        
-        # 保存记录
+
+        # Save the record
         result['calculation_id'] = calculation_id
         result['soc'] = soc
         result['incar_tags'] = incar_tags
@@ -356,10 +371,10 @@ def main(config_path: str = None, port: int = 8933, host: str = "0.0.0.0"):
             - error: Error message, if any
             - status: Job status ("pending"/"failed")
         """
-        # 生成随机UUID
+        # Generate a random UUID
         calculation_id = str(uuid.uuid4())
         
-        # 获取结构和前序计算文件
+        # Get the structure and preceding calculation files
         scf_record = read_record(restart_id)
         if scf_record is None:
             return {"success": False, "error": f"SCF record {restart_id} not found"}
@@ -367,7 +382,7 @@ def main(config_path: str = None, port: int = 8933, host: str = "0.0.0.0"):
         chgcar_path = os.path.join(scf_record['calculate_path'], "CHGCAR")
         wavecar_path = os.path.join(scf_record['calculate_path'], "WAVECAR")
         
-        # 设置k点
+        # Set k-points
 
         if kpoint_num is None:
             factor = 100 * np.power(struct.lattice.a * struct.lattice.b * struct.lattice.c / struct.lattice.volume , 1/3)
@@ -375,7 +390,7 @@ def main(config_path: str = None, port: int = 8933, host: str = "0.0.0.0"):
             kpoint_num = (max(math.ceil(kpoint_float[0]), 1), max(math.ceil(kpoint_float[1]), 1), max(math.ceil(kpoint_float[2]), 1))
         kpts = Kpoints.gamma_automatic(kpts = kpoint_num)
         
-        # 设置INCAR
+        # Set INCAR
         incar = {}
         if soc:
             incar.update(settings['VASP_default_INCAR']['nscf_soc'])
@@ -384,7 +399,7 @@ def main(config_path: str = None, port: int = 8933, host: str = "0.0.0.0"):
         if incar_tags is not None:
             incar.update(incar_tags)
         
-        # 执行计算
+        # Run the calculation
         result = vasp_nscf(
             calculation_id=calculation_id,
             work_dir=settings['work_dir'],
@@ -396,8 +411,8 @@ def main(config_path: str = None, port: int = 8933, host: str = "0.0.0.0"):
             attachment_path=attachment_path,
             potcar_map=potcar_map
         )
-        
-        # 保存记录
+
+        # Save the record
         result['calculation_id'] = calculation_id
         result['soc'] = soc
         result['incar_tags'] = incar_tags
@@ -435,25 +450,25 @@ def main(config_path: str = None, port: int = 8933, host: str = "0.0.0.0"):
                 }
             }
         """
-        # 从记录中获取计算信息
+        # Gather calculation info from records
         calc_dict = {}
         llm_friendly_result = {}
         
-        # 收集有效的计算记录
+        # Collect valid calculation records
         for calc_id in calculation_ids:
             record = read_record(calc_id)
             if record is not None:
                 calc_dict[calc_id] = record
         
-        # 对有记录的计算检查SLURM状态
+        # Check SLURM status for calculations that have records
         if calc_dict:
             updated_results = check_status(calc_dict)
-            # 更新记录
+            # Update the record
             for calc_id, result in updated_results.items():
                 write_record(calc_id, result)
                 calc_dict[calc_id] = result
         
-        # 为所有计算ID构建返回结果
+        # Build the return result for all calculation IDs
         for calc_id in calculation_ids:
             if calc_id in calc_dict:
                 data = calc_dict[calc_id]
@@ -576,20 +591,20 @@ def main(config_path: str = None, port: int = 8933, host: str = "0.0.0.0"):
             - calculation_data_summary: Summary of the data used
         """
         
-        # 提取计算数据
+        # Extract calculation data
         calculation_data = extract_calculation_data(calculation_ids)
-        # 检查是否有有效的计算数据
+        # Check whether there is any valid calculation data
         valid_data = {k: v for k, v in calculation_data.items() if v is not None}
         if not valid_data:
             return {
                 'success': False,
-                'error': f'没有找到有效的计算数据。提供的计算ID: {calculation_ids}',
+                'error': f'No valid calculation data found. Provided calculation IDs: {calculation_ids}',
                 'plot_path': None,
                 'image_base64': None,
                 'calculation_data_summary': None
             }
         
-        # 创建数据摘要
+        # Create a data summary
         data_summary = {}
         for calc_id, data in valid_data.items():
             if data:
@@ -601,7 +616,7 @@ def main(config_path: str = None, port: int = 8933, host: str = "0.0.0.0"):
                 }
                 data_summary[calc_id] = summary
         
-        # 执行画图代码
+        # Execute the plotting code
         success, result, image_base64 = safe_execute_plot_code(plot_code, valid_data, settings['work_dir'])
         if success:
             return {
@@ -758,17 +773,17 @@ def main(config_path: str = None, port: int = 8933, host: str = "0.0.0.0"):
             if success:
                 return {
                     "success": True,
-                    "message": f"成功删除计算记录 {calculation_id}"
+                    "message": f"Successfully deleted calculation record {calculation_id}"
                 }
             else:
                 return {
                     "success": False,
-                    "error": f"计算记录 {calculation_id} 不存在"
+                    "error": f"Calculation record {calculation_id} does not exist"
                 }
         except Exception as e:
             return {
                 "success": False,
-                "error": f"删除计算记录时出错: {str(e)}"
+                "error": f"Error while deleting calculation record: {str(e)}"
             }
 
     @mcp.tool(name="check_files_exist")

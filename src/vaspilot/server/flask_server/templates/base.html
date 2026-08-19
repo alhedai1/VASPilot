@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -29,11 +29,11 @@
 <body>
     <div class="container-fluid">
         <div class="row">
-            <!-- 左侧边栏 -->
+            <!-- Left sidebar -->
             <div class="col-md-3 sidebar bg-light p-3">
                 <h4 class="mb-3">{{ title }}</h4>
-                
-                <!-- 文件上传 -->
+
+                <!-- File upload -->
                 <div class="card mb-3">
                     <div class="card-body">
                         <h6 class="card-title">Upload crystal structure file</h6>
@@ -45,7 +45,7 @@
                     </div>
                 </div>
                 
-                <!-- 任务提交表单 -->
+                <!-- Task submission form -->
                 <div class="card mb-3">
                     <div class="card-body">
                         <h6 class="card-title">Submit new mission</h6>
@@ -62,7 +62,7 @@
                     </div>
                 </div>
                 
-                <!-- 任务历史 -->
+                <!-- Task history -->
                 <div id="task-list">
                     {% for task in recent_tasks %}
                     <div class="task-card card mb-2" data-task-id="{{ task.conversation_id }}">
@@ -93,7 +93,7 @@
                 </div>
             </div>
             
-            <!-- 主内容区域 -->
+            <!-- Main content area -->
             <div class="col-md-9 main-content p-3">
                 {% block content %}
                 <div class="text-center text-muted mt-5">
@@ -136,7 +136,7 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.24.1/plugins/autoloader/prism-autoloader.min.js"></script>
     
     <script>
-        // 文件上传
+        // File upload
         document.getElementById('upload-btn').addEventListener('click', async function () {
             const fileInput = document.getElementById('structure-file');
             const msg = document.getElementById('upload-message');
@@ -175,7 +175,7 @@
             }
         });
         
-        // 任务提交
+        // Task submission
         document.getElementById('task-form').addEventListener('submit', async function(e) {
             e.preventDefault();
             
@@ -219,7 +219,7 @@
             }
         });
         
-        // 任务卡片点击（使用事件委托处理动态创建的卡片）
+        // Task card click (use event delegation to handle dynamically created cards)
         document.addEventListener('click', function(e) {
             const taskCard = e.target.closest('.task-card');
             if (taskCard) {
@@ -232,7 +232,7 @@
             }
         });
         
-        // 显示消息
+        // Show message
         function showMessage(message, type) {
             const messageDiv = document.getElementById('submit-message');
             messageDiv.innerHTML = `<div class="alert alert-${type} alert-dismissible fade show" role="alert">
@@ -241,7 +241,7 @@
             </div>`;
         }
         
-        // 获取任务列表
+        // Get the task list
         async function fetchTaskList() {
             try {
                 const response = await fetch('/api/tasks');
@@ -254,12 +254,12 @@
             return null;
         }
         
-        // 更新任务列表DOM
+        // Update the task list DOM
         function updateTaskList(tasks) {
             const taskListContainer = document.getElementById('task-list');
             if (!taskListContainer || !tasks) return;
-            
-            // 检查是否有变化
+
+            // Check whether anything changed
             const currentCards = Array.from(taskListContainer.querySelectorAll('.task-card'));
             if (currentCards.length === tasks.length) {
                 let hasChanges = false;
@@ -289,13 +289,13 @@
             
             console.log('Task list changed, start update');
             
-            // 保存用户输入
+            // Save the user's current input
             const taskInput = document.getElementById('task-description');
             const userInput = taskInput ? taskInput.value : '';
             const isFocused = taskInput && document.activeElement === taskInput;
             const cursorPosition = isFocused ? taskInput.selectionStart : 0;
-            
-            // 更新任务列表
+
+            // Update the task list
             taskListContainer.innerHTML = '';
             tasks.forEach(task => {
                 const taskCard = document.createElement('div');
@@ -336,7 +336,7 @@
                 taskListContainer.appendChild(taskCard);
             });
             
-            // 恢复用户输入和光标位置
+            // Restore the user's input and cursor position
             if (taskInput && userInput) {
                 taskInput.value = userInput;
                 if (isFocused) {
@@ -346,19 +346,19 @@
                 console.log('User input content restored');
             }
         }
-        
-        // 自动刷新任务列表
+
+        // Automatically refresh the task list
         async function refreshTaskList() {
             const tasks = await fetchTaskList();
             if (tasks) {
                 updateTaskList(tasks);
             }
         }
-        
-        // 定期刷新任务列表
-        let refreshInterval = setInterval(refreshTaskList, 5000); // 5秒刷新一次
-        
-        // 页面隐藏时停止刷新，显示时重新开始
+
+        // Periodically refresh the task list
+        let refreshInterval = setInterval(refreshTaskList, 5000); // refresh every 5 seconds
+
+        // Stop refreshing when the page is hidden, resume when visible again
         document.addEventListener('visibilitychange', function() {
             if (document.hidden) {
                 if (refreshInterval) {

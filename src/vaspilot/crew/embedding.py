@@ -20,7 +20,7 @@ class LocalAPIEmbedder(CustomEmbeddingFunction):
         }
 
     def __call__(self, input: Documents) -> Embeddings:
-        """将文本列表发送到远程 embedding API 进行处理"""
+        """Send the list of texts to the remote embedding API for processing"""
         payload = {
             "input": input,
             "model": self.model_id
@@ -30,21 +30,21 @@ class LocalAPIEmbedder(CustomEmbeddingFunction):
             self.url,
             headers=self.headers,
             json=payload,
-            timeout=300  # 设置超时时间（根据实际情况调整）
+            timeout=300  # timeout in seconds (adjust as needed)
         )
 
-        # 处理 API 响应
+        # Handle the API response
         if response.status_code != 200:
-            raise Exception(f"API调用失败: {response.text}")
+            raise Exception(f"API call failed: {response.text}")
 
-        # 根据实际API返回结构提取结果
+        # Extract results based on the actual API response structure
         results = response.json()
-        
-        # 假设返回的数据结构：
+
+        # Assumed response structure:
         # {
         #   "embeddings": [[...], [...], ...]
         # }
-        # 如果实际结构不同需要在此修改
+        # Update this if the actual structure differs
         embeddings = results.get("data")
         
         sorted_embeddings = sorted(

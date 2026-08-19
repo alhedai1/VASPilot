@@ -1,17 +1,12 @@
-import os
-import sys
 import io
 import traceback
 from pathlib import Path
-from typing import Dict, Any, List, Optional
-import pickle
-import yaml
+from typing import Dict, Any, Optional
 import uuid
 import base64
 from contextlib import redirect_stdout, redirect_stderr
-from mcp.server.fastmcp import FastMCP
 import matplotlib
-matplotlib.use('Agg')  # 使用非交互式后端
+matplotlib.use('Agg')  # use a non-interactive backend
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -22,13 +17,13 @@ from pymatgen.electronic_structure.dos import CompleteDos
 
 
 def safe_execute_plot_code(plot_code: str, data: Dict[str, Any], work_dir: str) -> tuple[bool, str, Optional[str]]:
-    """安全执行画图代码"""
+    """Safely execute plotting code"""
     try:
-        # 重定向输出
+        # Redirect output
         stdout_buffer = io.StringIO()
         stderr_buffer = io.StringIO()
-        
-        # 创建执行环境，包含data变量和所需的库
+
+        # Create the execution environment, including the data variable and required libraries
         exec_globals = {
             'data': data,
             'plt': plt,
@@ -43,7 +38,7 @@ def safe_execute_plot_code(plot_code: str, data: Dict[str, Any], work_dir: str) 
             '__builtins__': __builtins__
         }
         
-        # 导入常用的pymatgen模块
+        # Import commonly used pymatgen modules
         try:
             from pymatgen.electronic_structure.core import Spin
             from pymatgen.electronic_structure.plotter import BSPlotter, DosPlotter
@@ -51,28 +46,28 @@ def safe_execute_plot_code(plot_code: str, data: Dict[str, Any], work_dir: str) 
             exec_globals['BSPlotter'] = BSPlotter
             exec_globals['DosPlotter'] = DosPlotter
         except ImportError:
-            pass  # 如果某些模块不可用，继续执行
-        
+            pass  # Continue execution if some modules are unavailable
+
         with redirect_stdout(stdout_buffer), redirect_stderr(stderr_buffer):
             exec(plot_code, exec_globals)
-        
-        # 生成唯一的图片文件名
+
+        # Generate a unique image filename
         plot_id = str(uuid.uuid4())
         plot_filename = f"plot_{plot_id}.png"
         plot_path = Path(work_dir) / plot_filename
-        
-        # 保存图片
+
+        # Save the image
         plt.savefig(plot_path, dpi=300, bbox_inches='tight')
-        plt.close()  # 关闭图片以释放内存
-        
-        # 读取图片并转换为base64
+        plt.close()  # close the figure to free memory
+
+        # Read the image and convert it to base64
         with open(plot_path, 'rb') as f:
             img_data = f.read()
             img_base64 = base64.b64encode(img_data).decode('utf-8')
-        
+
         return True, str(plot_path), img_base64
-        
+
     except Exception as e:
-        plt.close()  # 确保在出错时也关闭图片
-        error_msg = f"执行画图代码时出错: {str(e)}\n{traceback.format_exc()}"
+        plt.close()  # ensure the figure is closed even on error
+        error_msg = f"Error while executing plotting code: {str(e)}\n{traceback.format_exc()}"
         return False, error_msg, None

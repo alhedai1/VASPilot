@@ -1,26 +1,25 @@
 import sqlite3
 import pickle
-import json
 from typing import Dict, Any, Optional, List
 from pathlib import Path
 import logging
 
 class VaspCalculationDB:
-    """VASP计算记录的SQLite数据库管理类"""
-    
+    """SQLite database manager for VASP calculation records"""
+
     def __init__(self, db_path: str):
         """
-        初始化数据库连接
-        
+        Initialize the database connection
+
         Args:
-            db_path: SQLite数据库文件路径
+            db_path: Path to the SQLite database file
         """
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._init_database()
-        
+
     def _init_database(self):
-        """初始化数据库表结构"""
+        """Initialize the database table schema"""
         with sqlite3.connect(self.db_path) as conn:
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS calculations (
@@ -31,27 +30,27 @@ class VaspCalculationDB:
                     status TEXT,
                     calculate_path TEXT,
                     calc_type TEXT,
-                    
-                    -- relaxation 相关字段
+
+                    -- relaxation-related fields
                     total_energy REAL,
                     max_force REAL,
                     ionic_steps INTEGER,
-                    
-                    -- scf/nscf 相关字段
+
+                    -- scf/nscf-related fields
                     efermi REAL,
                     is_metal BOOLEAN,
-                    
-                    -- 控制参数
+
+                    -- control parameters
                     soc BOOLEAN,
                     restart_id TEXT,
                     kpath TEXT,
                     n_kpoints INTEGER,
-                    
-                    -- 时间戳
+
+                    -- timestamps
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    
-                    -- 复杂对象的BLOB存储
+
+                    -- BLOB storage for complex objects
                     structure_blob BLOB,
                     band_structure_blob BLOB,
                     dos_blob BLOB,
@@ -63,22 +62,22 @@ class VaspCalculationDB:
                     vbm_blob BLOB
                 )
             """)
-            
-            # 创建索引以提高查询性能
+
+            # Create indexes to improve query performance
             conn.execute("CREATE INDEX IF NOT EXISTS idx_calc_type ON calculations(calc_type)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_status ON calculations(status)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_restart_id ON calculations(restart_id)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_created_at ON calculations(created_at)")
-            
+
     def write_record(self, calculation_id: str, data: dict):
         """
-        写入计算记录
-        
+        Write a calculation record
+
         Args:
-            calculation_id: 计算ID
-            data: 计算数据字典
+            calculation_id: Calculation ID
+            data: Calculation data dictionary
         """
-        # 提取简单字段
+        # Extract simple fields
         simple_fields = {
             'calculation_id': calculation_id,
             'slurm_id': data.get('slurm_id'),
@@ -97,22 +96,22 @@ class VaspCalculationDB:
             'kpath': data.get('kpath'),
             'n_kpoints': data.get('n_kpoints'),
         }
-        
-        # 序列化复杂对象
+
+        # Serialize complex objects
         blob_fields = {}
         complex_field_mapping = {
             'structure': 'structure_blob',
             'band_structure': 'band_structure_blob',
             'dos': 'dos_blob',
             'eigenvalues': 'eigenvalues_blob',
-            'eigen_values': 'eigenvalues_blob',  # 兼容不同命名
+            'eigen_values': 'eigenvalues_blob',  # supports alternate naming
             'band_gap': 'band_gap_blob',
             'stress': 'stress_blob',
             'incar_tags': 'incar_tags_blob',
             'cbm': 'cbm_blob',
             'vbm': 'vbm_blob'
         }
-        
+
         for data_key, blob_key in complex_field_mapping.items():
             if data_key in data and data[data_key] is not None:
                 try:
@@ -122,51 +121,51 @@ class VaspCalculationDB:
                     blob_fields[blob_key] = None
             else:
                 blob_fields[blob_key] = None
-        
-        # 合并所有字段
+
+        # Merge all fields
         all_fields = {**simple_fields, **blob_fields}
-        
+
         with sqlite3.connect(self.db_path) as conn:
-            # 使用INSERT OR REPLACE以支持更新
+            # Use INSERT OR REPLACE to support updates
             placeholders = ', '.join(['?' for _ in all_fields])
             columns = ', '.join(all_fields.keys())
-            
+
             conn.execute(f"""
                 INSERT OR REPLACE INTO calculations ({columns})
                 VALUES ({placeholders})
             """, list(all_fields.values()))
-            
-            # 更新时间戳
+
+            # Update the timestamp
             conn.execute(
                 "UPDATE calculations SET updated_at = CURRENT_TIMESTAMP WHERE calculation_id = ?",
                 (calculation_id,)
             )
-            
+
     def read_record(self, calculation_id: str) -> Optional[Dict[str, Any]]:
         """
-        读取计算记录
-        
+        Read a calculation record
+
         Args:
-            calculation_id: 计算ID
-            
+            calculation_id: Calculation ID
+
         Returns:
-            计算数据字典，如果不存在则返回None
+            Calculation data dictionary, or None if it does not exist
         """
         with sqlite3.connect(self.db_path) as conn:
-            conn.row_factory = sqlite3.Row  # 使结果可以按列名访问
+            conn.row_factory = sqlite3.Row  # allow accessing results by column name
             cursor = conn.execute(
-                "SELECT * FROM calculations WHERE calculation_id = ?", 
+                "SELECT * FROM calculations WHERE calculation_id = ?",
                 (calculation_id,)
             )
             row = cursor.fetchone()
-            
+
             if row is None:
                 return None
-                
-            # 转换为字典并反序列化复杂对象
+
+            # Convert to dict and deserialize complex objects
             data = dict(row)
-            
-            # 反序列化BLOB字段
+
+            # Deserialize BLOB fields
             blob_field_mapping = {
                 'structure_blob': 'structure',
                 'band_structure_blob': 'band_structure',
@@ -178,7 +177,7 @@ class VaspCalculationDB:
                 'cbm_blob': 'cbm',
                 'vbm_blob': 'vbm'
             }
-            
+
             for blob_key, data_key in blob_field_mapping.items():
                 if data[blob_key] is not None:
                     try:
@@ -188,66 +187,66 @@ class VaspCalculationDB:
                         data[data_key] = None
                 else:
                     data[data_key] = None
-                # 删除blob字段，保持接口兼容
+                # Drop the blob field to preserve interface compatibility
                 del data[blob_key]
-                
-            # 删除时间戳字段，保持接口兼容
+
+            # Drop timestamp fields to preserve interface compatibility
             data.pop('created_at', None)
             data.pop('updated_at', None)
-            
+
             return data
-    
-    def list_calculations(self, 
+
+    def list_calculations(self,
                          calc_type: Optional[str] = None,
                          status: Optional[str] = None,
                          limit: Optional[int] = None) -> List[Dict[str, Any]]:
         """
-        列出计算记录
-        
+        List calculation records
+
         Args:
-            calc_type: 计算类型过滤
-            status: 状态过滤
-            limit: 返回记录数限制
-            
+            calc_type: Filter by calculation type
+            status: Filter by status
+            limit: Limit on the number of records returned
+
         Returns:
-            计算记录列表
+            List of calculation records
         """
         with sqlite3.connect(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
-            
+
             query = "SELECT calculation_id, calc_type, status, total_energy, efermi, created_at FROM calculations"
             params = []
             conditions = []
-            
+
             if calc_type:
                 conditions.append("calc_type = ?")
                 params.append(calc_type)
-            
+
             if status:
                 conditions.append("status = ?")
                 params.append(status)
-                
+
             if conditions:
                 query += " WHERE " + " AND ".join(conditions)
-                
+
             query += " ORDER BY created_at DESC"
-            
+
             if limit:
                 query += " LIMIT ?"
                 params.append(limit)
-                
+
             cursor = conn.execute(query, params)
             return [dict(row) for row in cursor.fetchall()]
-    
+
     def delete_record(self, calculation_id: str) -> bool:
         """
-        删除计算记录
-        
+        Delete a calculation record
+
         Args:
-            calculation_id: 计算ID
-            
+            calculation_id: Calculation ID
+
         Returns:
-            是否成功删除
+            Whether the deletion succeeded
         """
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.execute(
@@ -255,27 +254,27 @@ class VaspCalculationDB:
                 (calculation_id,)
             )
             return cursor.rowcount > 0
-    
+
     def get_statistics(self) -> Dict[str, Any]:
         """
-        获取数据库统计信息
-        
+        Get database statistics
+
         Returns:
-            统计信息字典
+            Statistics dictionary
         """
         with sqlite3.connect(self.db_path) as conn:
             stats = {}
-            
-            # 总记录数
+
+            # Total number of records
             cursor = conn.execute("SELECT COUNT(*) FROM calculations")
             stats['total_calculations'] = cursor.fetchone()[0]
-            
-            # 按计算类型统计
+
+            # Statistics by calculation type
             cursor = conn.execute("SELECT calc_type, COUNT(*) FROM calculations GROUP BY calc_type")
             stats['by_calc_type'] = dict(cursor.fetchall())
-            
-            # 按状态统计
+
+            # Statistics by status
             cursor = conn.execute("SELECT status, COUNT(*) FROM calculations GROUP BY status")
             stats['by_status'] = dict(cursor.fetchall())
-            
+
             return stats
