@@ -280,42 +280,87 @@ def vasp_nscf(calculation_id: str, work_dir: str, struct: Structure,
 def check_status(calc_dict: dict[str, dict[str, Any]]) -> Dict[str, Any]:
     """
     检查SLURM任务状态并返回计算结果
-    
+
     参数:
-        calc_dict: {calc_id: {"slurm_id": slurm_id, "calc_type": calc_type, "calculate_path": calculate_path, "status": status}}
-        
+        calc_dict: {
+            calc_id: {
+                "slurm_id": slurm_id,
+                "calc_type": calc_type,
+                "calculate_path": calculate_path,
+                "status": status
+            }
+        }
+
     返回:
         Dict包含每个任务的状态和结果
     """
-    
+
     for calc_id, job_info in calc_dict.items():
         slurm_id = job_info["slurm_id"]
         calc_type = job_info["calc_type"]
         calculate_path = job_info["calculate_path"]
-        
+
         try:
             # 检查SLURM任务状态
             time.sleep(3)
-            result = subprocess.run(['squeue', '-j', slurm_id, '--noheader'], 
-                                  capture_output=True, text=True)
-            
+
+            result = subprocess.run(
+                ["squeue", "-j", slurm_id, "--noheader"],
+                capture_output=True,
+                text=True
+            )
+
             if result.returncode == 0 and result.stdout.strip():
                 # 任务仍在运行
                 job_status = "running"
                 job_result = {}
+
             else:
-                # 任务已完成，检查是否成功
+                # 任务已离开 squeue，使用 scontrol 检查最终状态
                 time.sleep(3)
-                sacct_result = subprocess.run(['sacct', '-j', slurm_id, '--format=State', '--noheader'], 
-                                            capture_output=True, text=True)
-                
-                if sacct_result.returncode == 0:
-                    state = sacct_result.stdout.strip().split('\n')[0].strip()
-                    if 'COMPLETED' in state:
+
+                scontrol_result = subprocess.run(
+                    ["scontrol", "show", "job", slurm_id, "-o"],
+                    capture_output=True,
+                    text=True
+                )
+
+                if (
+                    scontrol_result.returncode == 0
+                    and scontrol_result.stdout.strip()
+                ):
+                    state = ""
+
+                    # Example:
+                    # JobId=6 ... JobState=COMPLETED ...
+                    for field in scontrol_result.stdout.strip().split():
+                        if field.startswith("JobState="):
+                            state = field.split("=", 1)[1]
+                            break
+
+                    if state == "COMPLETED":
                         job_status = "completed"
-                        # 读取计算结果
-                        job_result = _read_calculation_result(calc_type, calculate_path)
-                    elif 'FAILED' in state:
+
+                        job_result = _read_calculation_result(
+                            calc_type,
+                            calculate_path
+                        )
+
+                    elif state == "TIMEOUT":
+                        job_status = "timeout"
+                        job_result = {
+                            "error": "SLURM job timed out"
+                        }
+
+                    elif state in {
+                        "FAILED",
+                        "CANCELLED",
+                        "NODE_FAIL",
+                        "OUT_OF_MEMORY",
+                        "BOOT_FAIL",
+                        "DEADLINE",
+                        "PREEMPTED",
+                    }:
                         err_str = """ -----------------------------------------------------------------------------
 |                                                                             |
 |     EEEEEEE  RRRRRR   RRRRRR   OOOOOOO  RRRRRR      ###     ###     ###     |
@@ -325,31 +370,68 @@ def check_status(calc_dict: dict[str, dict[str, Any]]) -> Dict[str, Any]:
 |     E        R   R    R   R    O     O  R   R                               |
 |     E        R    R   R    R   O     O  R    R      ###     ###     ###     |
 |     EEEEEEE  R     R  R     R  OOOOOOO  R     R     ###     ###     ###     |"""
-                        try:
-                            if os.path.exists(os.path.join(calculate_path, "log")):
-                                with open(os.path.join(calculate_path, "log"), "r") as f:
-                                    log_content = f.read().split(err_str)[1]
 
+                        try:
+                            log_path = os.path.join(
+                                calculate_path,
+                                "log"
+                            )
+
+                            if not os.path.exists(log_path):
+                                log_path = os.path.join(
+                                    calculate_path,
+                                    "OUTCAR"
+                                )
+
+                            with open(log_path, "r") as f:
+                                content = f.read()
+
+                            if err_str in content:
+                                log_content = content.split(
+                                    err_str,
+                                    1
+                                )[1]
                             else:
-                                with open(os.path.join(calculate_path, "OUTCAR"), "r") as f:
-                                    log_content = f.read().split(err_str)[1]
-                        except:
-                            log_content = f" SLURM job failed without any error message"
+                                log_content = content
+
+                        except Exception:
+                            log_content = (
+                                "SLURM job failed without any error message"
+                            )
+
                         job_status = "failed"
-                        job_result = {"error": f"{log_content}"}
-                    elif state == "TIMEOUT":
-                        job_status = "timeout"
-                        job_result = {"error": f"SLURM job timed out"}
-                    else:
+                        job_result = {
+                            "error": log_content
+                        }
+
+                    elif state:
                         job_status = state.lower()
-                        job_result = {"error": f"SLURM job exited with state: {state}"}
+                        job_result = {
+                            "error": (
+                                f"SLURM job exited with state: {state}"
+                            )
+                        }
+
+                    else:
+                        job_status = "unknown"
+                        job_result = {
+                            "error": (
+                                "Cannot find JobState from scontrol"
+                            )
+                        }
+
                 else:
                     job_status = "unknown"
-                    job_result = {"error": "Cannot determine job status"}
-            
+                    job_result = {
+                        "error": (
+                            "Cannot determine job status: "
+                            f"{scontrol_result.stderr.strip()}"
+                        )
+                    }
+
             calc_dict[calc_id].update(job_result)
             calc_dict[calc_id]["status"] = job_status
-            
+
         except Exception as e:
             calc_dict[calc_id] = {
                 "slurm_id": slurm_id,
@@ -358,9 +440,8 @@ def check_status(calc_dict: dict[str, dict[str, Any]]) -> Dict[str, Any]:
                 "status": "error",
                 "error": str(e)
             }
-    
-    return calc_dict
 
+    return calc_dict
 
 def _read_calculation_result(calc_type: str, calculate_path: str) -> Dict[str, Any]:
     """
