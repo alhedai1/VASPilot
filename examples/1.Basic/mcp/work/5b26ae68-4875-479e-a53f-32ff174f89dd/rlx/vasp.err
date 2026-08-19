@@ -1,0 +1,2 @@
+mpirun: Forwarding signal 18 to job
+slurmstepd-gpusystem: error: *** JOB 22 ON gpusystem CANCELLED AT 2026-08-19T05:47:05 ***

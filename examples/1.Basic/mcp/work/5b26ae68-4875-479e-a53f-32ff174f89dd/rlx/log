@@ -1,0 +1,51 @@
+===== VASPilot Job =====
+JOB_ID=22
+HOST=gpusystem
+NTASKS=8
+WORKDIR=/workspace/team/material/VASPilot/examples/1.Basic/mcp/work/5b26ae68-4875-479e-a53f-32ff174f89dd/rlx
+ running    8 mpi-ranks, with    1 threads/rank, on    1 nodes
+ distrk:  each k-point on    8 cores,    1 groups
+ distr:  one band on    4 cores,    2 groups
+ vasp.6.4.2 20Jul23 (build Aug 12 2026 07:17:50) complex                         
+ POSCAR found type information on POSCAR H O 
+ POSCAR found :  2 types and      36 ions
+ Reading from existing POTCAR
+ scaLAPACK will be used
+ Reading from existing POTCAR
+ -----------------------------------------------------------------------------
+|                                                                             |
+|               ----> ADVICE to this user running VASP <----                  |
+|                                                                             |
+|     You have a (more or less) 'large supercell' and for larger cells it     |
+|     might be more efficient to use real-space projection operators.         |
+|     Therefore, try LREAL= Auto in the INCAR file.                           |
+|     Mind: If you want to do very accurate calculations, keep the            |
+|     reciprocal projection scheme (i.e. LREAL=.FALSE.).                      |
+|                                                                             |
+ -----------------------------------------------------------------------------
+
+ LDA part: xc-table for Pade appr. of Perdew
+ POSCAR, INCAR and KPOINTS ok, starting setup
+ FFT: planning ... GRIDC
+ FFT: planning ... GRID_SOFT
+ FFT: planning ... GRID
+ WAVECAR not read
+ entering main loop
+       N       E                     dE             d eps       ncg     rms          rms(c)
+DAV:   1     0.550994459671E+03    0.55099E+03   -0.41037E+04  3952   0.101E+03
+DAV:   2    -0.136314974192E+03   -0.68731E+03   -0.66350E+03  4732   0.279E+02
+DAV:   3    -0.193867311231E+03   -0.57552E+02   -0.57291E+02  4664   0.866E+01
+DAV:   4    -0.194672636257E+03   -0.80533E+00   -0.80426E+00  4584   0.113E+01
+DAV:   5    -0.194688604395E+03   -0.15968E-01   -0.15961E-01  4772   0.150E+00    0.236E+01
+DAV:   6    -0.179201546708E+03    0.15487E+02   -0.52287E+01  4600   0.260E+01    0.800E+00
+DAV:   7    -0.178758543005E+03    0.44300E+00   -0.23257E+00  4440   0.496E+00    0.513E+00
+DAV:   8    -0.178546680661E+03    0.21186E+00   -0.56217E-01  4384   0.315E+00    0.968E-01
+DAV:   9    -0.178533573538E+03    0.13107E-01   -0.77019E-02  4624   0.107E+00    0.283E-01
+DAV:  10    -0.178541294975E+03   -0.77214E-02   -0.92469E-03  4028   0.377E-01    0.838E-02
+DAV:  11    -0.178541526245E+03   -0.23127E-03   -0.28936E-04  4224   0.813E-02    0.342E-02
+DAV:  12    -0.178541521430E+03    0.48154E-05   -0.66775E-05  4524   0.340E-02    0.122E-02
+DAV:  13    -0.178541517272E+03    0.41573E-05   -0.12494E-05  4364   0.205E-02    0.548E-03
+DAV:  14    -0.178541516216E+03    0.10568E-05   -0.36841E-06  4148   0.972E-03    0.208E-03
+DAV:  15    -0.178541516363E+03   -0.14690E-06   -0.12518E-06  2996   0.523E-03
+   1 F= -.17854152E+03 E0= -.17854152E+03  d E =-.178542E+03
+ BRION: g(F)=  0.425E+00 g(S)=  0.321E-01
