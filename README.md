@@ -131,9 +131,16 @@ Thanks to CrewAI's flexibility, VASPilot allows you to easily customize agent an
 
 #### Required API Keys
 
-- **Materials Project API**: Required for structure search functionality
+- **Materials Project API**: Required for structure search functionality. Export it
+  as `MP_API_KEY` (or place `MP_API_KEY=...` in an untracked local `.env`); never
+  commit a real key.
 - **LLM API**: Required for AI agent functionality (supports OpenAI-compatible APIs)
 - **Embedding API**: Required for memory and RAG functionality
+
+The active Quart server uses a deterministic Materials Project retrieval boundary
+for pure and mixed structure workflows. See
+[Deterministic Materials Project structure retrieval](docs/deterministic_structure_retrieval.md)
+for its contracts, limitations, test commands, and live benchmark instructions.
 
 
 ### Starting the Services

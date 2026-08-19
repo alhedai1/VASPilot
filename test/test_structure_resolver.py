@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from pydantic import ValidationError
 from pymatgen.core import Lattice, Structure
@@ -279,6 +280,28 @@ class ResolverTests(unittest.TestCase):
         self.assertEqual(output_path.parent, Path(self.temp.name).resolve())
         self.assertEqual(output_path.name, "unsafe_id_Si.vasp")
         self.assertEqual(len(list(Path(self.temp.name).iterdir())), 1)
+
+    def test_selected_structure_is_written_atomically_inside_output_directory(self):
+        resolver, _ = self.resolver([[document("mp-2", simple_si())]])
+        final_path = Path(self.temp.name).resolve() / "mp-2_Si.vasp"
+        writer_paths = []
+        original_to = Structure.to
+
+        def recording_to(structure, *args, **kwargs):
+            writer_paths.append(Path(kwargs["filename"]).resolve())
+            return original_to(structure, *args, **kwargs)
+
+        with patch.object(Structure, "to", new=recording_to):
+            result = resolver.resolve(self.select_request())
+
+        self.assertEqual(result.status, ResolutionStatus.SELECTED)
+        self.assertEqual(Path(result.structure_path), final_path)
+        self.assertEqual(len(writer_paths), 1)
+        self.assertEqual(writer_paths[0].parent, final_path.parent)
+        self.assertNotEqual(writer_paths[0], final_path)
+        self.assertFalse(writer_paths[0].exists())
+        self.assertTrue(final_path.is_file())
+        self.assertEqual(len(list(final_path.parent.iterdir())), 1)
 
 
 if __name__ == "__main__":
