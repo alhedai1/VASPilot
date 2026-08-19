@@ -22,6 +22,15 @@ from .structure_models import (
 
 PARSER_POLICY_VERSION = "structure-request-parser-v1"
 MAX_CORRECTIVE_RETRIES = 2
+_MULTIPLE_INPUT_INTENT = re.compile(
+    r"\b(?:compare|comparison|several|multiple|more\s+than\s+one|all\s+(?:the\s+)?structures)\b",
+    re.IGNORECASE,
+)
+
+
+class ParserMode(str, Enum):
+    STANDARD = "standard"
+    MIXED_SINGLE_INPUT = "mixed_single_input"
 
 
 class ParserStatus(str, Enum):
@@ -103,11 +112,46 @@ num_sites.maximum or energy_above_hull.minimum. Do not provide evidence for
 omitted/default values.
 """
 
+MIXED_SINGLE_INPUT_PROMPT = """You extract only the Materials Project structure
+constraints from a larger downstream workflow that requires exactly one initial
+structure. Return exactly one JSON object and no Markdown.
+
+For parsed output use exactly this shape:
+{"status":"parsed","request":{"formula":"MoS2"},
+"evidence":[{"field":"formula","quote":"MoS2"}],"clarification":null}
+Every evidence item has exactly the keys "field" and "quote". The value of
+"quote" must be a verbatim substring of the user request. Never use a key named
+"evidence" inside an evidence item and never omit evidence for an extracted field.
+For clarification use exactly:
+{"status":"clarification_required","request":null,"evidence":[],
+"clarification":"a concise question"}
+Example: for "relax 2H-MoS2 using VASP", extract request
+{"formula":"MoS2","semantic_label":"2H"} with exact evidence for both fields.
+
+Allowed statuses: parsed, clarification_required. For parsed, request may contain
+only: material_ids, formula, chemical_system, include_elements, exclude_elements,
+crystal_system, spacegroup_symbol, spacegroup_number, num_sites,
+energy_above_hull, stable_only, theoretical, semantic_label, selection.
+
+The application owns operation=select and defaults selection=require_unique.
+Include selection=most_stable only when the user explicitly says most stable or
+lowest energy above hull. Do not include operation. Do not provide evidence for
+application-owned defaults. Provide exact source evidence for every extracted
+scientific constraint and for explicit most_stable selection.
+
+Never infer crystallographic properties from phase/polytype/prototype labels.
+Never translate common chemical names into formulas. Never invent space group,
+crystal system, site count, energy constraints, MP IDs, or filtering policy.
+If the workflow requests several structures or a comparison, return
+clarification_required because this mode accepts one authoritative input only.
+"""
+
 
 def parser_from_config(
     config: dict[str, Any],
     llm_config_key: str = "fn_call_llm",
     max_corrective_retries: int = MAX_CORRECTIVE_RETRIES,
+    mode: ParserMode = ParserMode.STANDARD,
 ) -> "StructureRequestParser":
     """Build a direct parser call using VASPilot's existing LLM mapping."""
 
@@ -119,6 +163,7 @@ def parser_from_config(
     return StructureRequestParser(
         llm_callable=llm.call,
         max_corrective_retries=max_corrective_retries,
+        mode=mode,
     )
 
 
@@ -129,11 +174,13 @@ class StructureRequestParser:
         self,
         llm_callable: Callable[[list[dict[str, str]]], str],
         max_corrective_retries: int = MAX_CORRECTIVE_RETRIES,
+        mode: ParserMode = ParserMode.STANDARD,
     ) -> None:
         if not 0 <= max_corrective_retries <= MAX_CORRECTIVE_RETRIES:
             raise ValueError(f"max_corrective_retries must be 0..{MAX_CORRECTIVE_RETRIES}")
         self.llm_callable = llm_callable
         self.max_corrective_retries = max_corrective_retries
+        self.mode = mode
 
     def parse(self, source_text: str) -> StructureRequestParseResult:
         if not source_text.strip():
@@ -142,9 +189,28 @@ class StructureRequestParser:
                 error="source text must not be blank",
                 retry_count=0,
             )
+        if (
+            self.mode == ParserMode.MIXED_SINGLE_INPUT
+            and _MULTIPLE_INPUT_INTENT.search(source_text)
+        ):
+            return StructureRequestParseResult(
+                status=ParserStatus.CLARIFICATION_REQUIRED,
+                clarification=(
+                    "This workflow currently accepts one authoritative Materials "
+                    "Project structure. Please specify which single structure to use."
+                ),
+                retry_count=0,
+            )
 
         messages = [
-            {"role": "system", "content": SYSTEM_PROMPT},
+            {
+                "role": "system",
+                "content": (
+                    MIXED_SINGLE_INPUT_PROMPT
+                    if self.mode == ParserMode.MIXED_SINGLE_INPUT
+                    else SYSTEM_PROMPT
+                ),
+            },
             {"role": "user", "content": source_text},
         ]
         last_error = "unknown parser error"
@@ -168,16 +234,31 @@ class StructureRequestParser:
                     raise ValueError("parsed status requires a request")
 
                 request_data = dict(envelope.request)
+                workflow_defaults: set[str] = set()
+                if self.mode == ParserMode.MIXED_SINGLE_INPUT:
+                    if "operation" in request_data:
+                        raise ValueError("mixed parser operation is application-owned")
+                    request_data["operation"] = RequestOperation.SELECT
+                    workflow_defaults.add("operation")
+                    if "selection" not in request_data:
+                        request_data["selection"] = SelectionBehavior.REQUIRE_UNIQUE
+                        workflow_defaults.add("selection")
+                    elif request_data["selection"] != SelectionBehavior.MOST_STABLE.value:
+                        raise ValueError(
+                            "mixed parser may specify only explicit most_stable selection"
+                        )
                 if request_data.get("formula"):
                     request_data["formula"] = Composition(
                         request_data["formula"]
                     ).reduced_formula
                 if request_data.get("semantic_label"):
                     request_data["semantic_label"] = self._normalize_semantic_label(
-                        request_data["semantic_label"]
+                        request_data["semantic_label"], request_data.get("formula")
                     )
                 request = StructureRequest.model_validate(request_data)
-                self._validate_evidence(source_text, request, envelope.evidence)
+                self._validate_evidence(
+                    source_text, request, envelope.evidence, workflow_defaults
+                )
                 return StructureRequestParseResult(
                     status=ParserStatus.PARSED,
                     request=request,
@@ -212,6 +293,7 @@ class StructureRequestParser:
         source_text: str,
         request: StructureRequest,
         evidence: Sequence[RequestEvidence],
+        workflow_defaults: Optional[set[str]] = None,
     ) -> None:
         evidence_by_field: dict[str, list[str]] = {}
         for item in evidence:
@@ -219,7 +301,8 @@ class StructureRequestParser:
                 raise ValueError(f"evidence quote is not exact source text: {item.quote!r}")
             evidence_by_field.setdefault(item.field, []).append(item.quote)
 
-        required = self._required_evidence_fields(request)
+        workflow_defaults = workflow_defaults or set()
+        required = self._required_evidence_fields(request) - workflow_defaults
         supplied = set(evidence_by_field)
         missing = required - supplied
         unexpected = supplied - required
@@ -228,8 +311,8 @@ class StructureRequestParser:
         if unexpected:
             raise ValueError(f"evidence supplied for default or absent fields: {sorted(unexpected)}")
 
-        self._validate_action_evidence(request, evidence_by_field)
-        self._validate_literal_evidence(request, evidence_by_field)
+        self._validate_action_evidence(request, evidence_by_field, workflow_defaults)
+        self._validate_literal_evidence(source_text, request, evidence_by_field)
 
     @staticmethod
     def _required_evidence_fields(request: StructureRequest) -> set[str]:
@@ -268,18 +351,25 @@ class StructureRequestParser:
 
     @staticmethod
     def _validate_action_evidence(
-        request: StructureRequest, evidence: dict[str, list[str]]
+        request: StructureRequest,
+        evidence: dict[str, list[str]],
+        workflow_defaults: Optional[set[str]] = None,
     ) -> None:
-        operation_text = " ".join(evidence["operation"]).casefold()
-        selection_text = " ".join(evidence["selection"]).casefold()
+        workflow_defaults = workflow_defaults or set()
+        if {"operation", "selection"}.issubset(workflow_defaults):
+            return
+        operation_text = " ".join(evidence.get("operation", ())).casefold()
+        selection_text = " ".join(evidence.get("selection", ())).casefold()
         search_words = ("search", "find", "list", "show candidates", "structures")
         select_words = ("get", "retrieve", "download", "use", "most stable", "lowest energy")
-        if request.operation == RequestOperation.SEARCH:
+        if "operation" not in workflow_defaults and request.operation == RequestOperation.SEARCH:
             if not any(word in operation_text for word in search_words):
                 raise ValueError("search operation lacks explicit action evidence")
-        elif not any(word in operation_text for word in select_words) and not request.material_ids:
+        elif "operation" not in workflow_defaults and not any(word in operation_text for word in select_words) and not request.material_ids:
             raise ValueError("select operation lacks explicit action evidence")
 
+        if "selection" in workflow_defaults:
+            return
         if request.selection == SelectionBehavior.RETURN_ALL:
             if not any(word in selection_text for word in search_words):
                 raise ValueError("return_all lacks explicit plural/search evidence")
@@ -289,9 +379,11 @@ class StructureRequestParser:
         elif not any(word in selection_text for word in select_words) and not request.material_ids:
             raise ValueError("require_unique lacks explicit single-selection evidence")
 
-    @staticmethod
     def _validate_literal_evidence(
-        request: StructureRequest, evidence: dict[str, list[str]]
+        self,
+        source_text: str,
+        request: StructureRequest,
+        evidence: dict[str, list[str]],
     ) -> None:
         def combined(field: str) -> str:
             return " ".join(evidence.get(field, ()))
@@ -378,6 +470,12 @@ class StructureRequestParser:
         if request.semantic_label:
             if request.semantic_label.casefold() not in combined("semantic_label").casefold():
                 raise ValueError("semantic label is not copied from the source")
+        elif (
+            self.mode == ParserMode.MIXED_SINGLE_INPUT
+            and request.formula
+            and self._hyphenated_semantic_label(source_text, request.formula)
+        ):
+            raise ValueError("explicit hyphenated semantic label was omitted")
 
     @staticmethod
     def _formula_supported(normalized_formula: str, quote: str) -> bool:
@@ -400,10 +498,17 @@ class StructureRequestParser:
         return False
 
     @staticmethod
-    def _normalize_semantic_label(value: str) -> str:
+    def _normalize_semantic_label(value: str, formula: Optional[str] = None) -> str:
         """Remove generic wrappers without interpreting the label itself."""
 
         normalized = value.strip()
+        if formula:
+            normalized = re.sub(
+                rf"(?:\s+phase\s+of\s+|\s+of\s+|[-\s]+){re.escape(formula)}$",
+                "",
+                normalized,
+                flags=re.IGNORECASE,
+            ).strip()
         normalized = re.sub(
             r"^(?:phase|polytype|prototype)\s+",
             "",
@@ -419,6 +524,15 @@ class StructureRequestParser:
         if not normalized:
             raise ValueError("semantic label contains only a generic wrapper")
         return normalized
+
+    @staticmethod
+    def _hyphenated_semantic_label(source_text: str, formula: str) -> Optional[str]:
+        match = re.search(
+            rf"(?<![A-Za-z0-9])([A-Za-z0-9][A-Za-z0-9_-]*)-{re.escape(formula)}(?![A-Za-z0-9])",
+            source_text,
+            flags=re.IGNORECASE,
+        )
+        return match.group(1) if match else None
 
 
 def math_isclose(left: float, right: float) -> bool:

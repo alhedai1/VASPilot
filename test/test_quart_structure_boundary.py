@@ -14,15 +14,18 @@ from vaspilot.server.quart_server.quart_server import (
     _structure_resolver_from_environment,
 )
 from vaspilot.tools.structure_application_boundary import StructureApplicationBoundary
+from vaspilot.tools.structure_application_boundary import ResolvedStructureContext
+from vaspilot.tools.structure_models import ResolutionStatus
 from vaspilot.tools.structure_request_applicability import (
     StructureRequestApplicabilityClassifier,
 )
 
 
 class FakeBoundary:
-    def __init__(self, should_run_crewai: bool, rendered="deterministic result"):
+    def __init__(self, should_run_crewai: bool, rendered="deterministic result", resolved=None):
         self.should_run_crewai = should_run_crewai
         self.rendered = rendered
+        self.resolved = resolved
         self.calls = []
 
     def handle(self, source_text, output_directory, invocation_key):
@@ -30,6 +33,7 @@ class FakeBoundary:
         return SimpleNamespace(
             should_run_crewai=self.should_run_crewai,
             rendered_response=None if self.should_run_crewai else self.rendered,
+            resolved_structure=self.resolved,
         )
 
 
@@ -49,9 +53,11 @@ class FakeGenerator:
         self.crew_calls = 0
         self.stop_calls = 0
         self.created_crew = FakeCrew()
+        self.crew_arguments = []
 
-    def crew(self, _local_dir):
+    def crew(self, _local_dir, **kwargs):
         self.crew_calls += 1
+        self.crew_arguments.append((_local_dir, kwargs))
         return self.created_crew
 
     def stop(self):
@@ -160,6 +166,43 @@ class QuartBoundaryTests(unittest.TestCase):
             self.assertEqual(container["result"], "crew result")
             self.assertEqual(server.generator.crew_calls, 1)
             self.assertEqual(server.generator.created_crew.kickoff_calls, 1)
+            self.assertEqual(server.generator.crew_arguments[0][1], {})
+
+    def test_resolved_mixed_context_is_authoritative_and_filters_tools(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as td:
+            selected = Path(td) / "mp-2815.cif"
+            selected.write_text("fixture", encoding="utf-8")
+            context = ResolvedStructureContext(
+                material_id="mp-2815",
+                structure_path=str(selected),
+                formula="MoS2",
+                resolver_status=ResolutionStatus.SELECTED,
+                resolver_policy_version="resolver-test-v1",
+                semantic_label="2H",
+                semantic_policy_version="semantic-test-v1",
+            )
+            server = bare_server(td, FakeBoundary(True, resolved=context))
+            server.generator.created_crew.kickoff = lambda: "retrieval failed"
+            container = {}
+            server._run_crew_kickoff_thread(
+                td, "relax 2H-MoS2 using VASP", container, "mixed"
+            )
+
+            self.assertEqual(server.generator.crew_calls, 1)
+            kwargs = server.generator.crew_arguments[0][1]
+            self.assertEqual(kwargs["resolved_structure_context"], context)
+            self.assertEqual(
+                kwargs["forbidden_tools"],
+                frozenset({"search_materials_project", "create_crystal_structure"}),
+            )
+            description = server.generator.created_crew.tasks[0].description
+            self.assertIn("material_id: mp-2815", description)
+            self.assertIn(str(selected.resolve()), description)
+            self.assertIn("[USER REQUEST]", description)
+            self.assertTrue(container["result"].startswith("authoritative_structure: selected"))
+            self.assertIn("material_id: mp-2815", container["result"])
+            self.assertIn(str(selected.resolve()), container["result"])
+            self.assertIn("retrieval failed", container["result"])
 
     def test_two_executions_use_separate_conversation_directories(self):
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as td:

@@ -7,7 +7,14 @@ import re
 from enum import Enum
 from typing import Any, Callable, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 from pymatgen.core import Composition, Element
 
 
@@ -17,7 +24,9 @@ MAX_CLASSIFICATION_RETRIES = 2
 
 class ApplicabilityStatus(str, Enum):
     PURE_MP_STRUCTURE = "pure_mp_structure"
-    NOT_PURE = "not_pure"
+    MIXED_MP_STRUCTURE = "mixed_mp_structure"
+    LOCAL_OR_UNRELATED = "local_or_unrelated"
+    NOT_PURE = "local_or_unrelated"  # backward-compatible enum alias
     CLARIFICATION_REQUIRED = "clarification_required"
     CLASSIFICATION_ERROR = "classification_error"
 
@@ -39,6 +48,11 @@ class StructureApplicabilityResult(BaseModel):
     retry_count: int = Field(ge=0, le=MAX_CLASSIFICATION_RETRIES)
     policy_version: str = APPLICABILITY_POLICY_VERSION
 
+    @field_validator("status", mode="before")
+    @classmethod
+    def normalize_legacy_status(cls, value: object) -> object:
+        return "local_or_unrelated" if value == "not_pure" else value
+
     @model_validator(mode="after")
     def validate_status_payload(self) -> "StructureApplicabilityResult":
         if self.status == ApplicabilityStatus.PURE_MP_STRUCTURE and self.evidence is None:
@@ -47,8 +61,11 @@ class StructureApplicabilityResult(BaseModel):
             raise ValueError("clarification text is required")
         if self.status == ApplicabilityStatus.CLASSIFICATION_ERROR and not self.error:
             raise ValueError("classification error text is required")
-        if self.status != ApplicabilityStatus.PURE_MP_STRUCTURE and self.evidence is not None:
-            raise ValueError("only pure MP classification may include evidence")
+        if self.status not in {
+            ApplicabilityStatus.PURE_MP_STRUCTURE,
+            ApplicabilityStatus.MIXED_MP_STRUCTURE,
+        } and self.evidence is not None:
+            raise ValueError("only MP classification may include evidence")
         if self.status != ApplicabilityStatus.CLARIFICATION_REQUIRED and self.clarification is not None:
             raise ValueError("clarification is valid only for clarification_required")
         if self.status != ApplicabilityStatus.CLASSIFICATION_ERROR and self.error is not None:
@@ -63,17 +80,23 @@ class _ClassifierEnvelope(BaseModel):
     evidence: Optional[ApplicabilityEvidence] = None
     clarification: Optional[str] = None
 
+    @field_validator("status", mode="before")
+    @classmethod
+    def normalize_legacy_status(cls, value: object) -> object:
+        return "local_or_unrelated" if value == "not_pure" else value
+
 
 SYSTEM_PROMPT = """Classify whether an arbitrary VASPilot task is ONLY a request to
 search for, list, retrieve, select, show, or download crystal structure records
 from Materials Project. Return exactly one JSON object and no Markdown.
 
-Allowed statuses: pure_mp_structure, not_pure, clarification_required.
+Allowed statuses: pure_mp_structure, mixed_mp_structure, local_or_unrelated,
+clarification_required.
 PURE means structure retrieval is the complete final action. It includes explicit
-MP IDs and conventional prototype/phase searches. NOT_PURE includes calculations,
-relaxation, electronic band structure, density of states, existing output parsing,
-local/uploaded files, structure creation, literature search, explanation, and any
-larger workflow that merely needs a structure.
+MP IDs and conventional prototype/phase searches. MIXED means a downstream
+calculation explicitly needs a material structure retrieved from Materials Project.
+LOCAL_OR_UNRELATED includes existing output parsing, local/uploaded files, structure
+creation, literature search, explanation, and work without an MP-retrieved input.
 
 Do not classify from the word "structure" alone. Do not extract or infer any
 crystallographic constraint. For pure_mp_structure provide exact source substrings:
@@ -81,7 +104,8 @@ crystallographic constraint. For pure_mp_structure provide exact source substrin
 "material_anchor":"exact quote"},"clarification":null}
 The retrieval quote must demonstrate search/retrieve/list/select/show/find/download
 intent. The anchor must identify a formula, material name, MP ID, phase, prototype,
-or explicit Materials Project source. For other statuses evidence must be null.
+or explicit Materials Project source. Mixed MP classifications require the same
+exact evidence. For local/unrelated statuses evidence must be null.
 Use clarification_required only when the final requested action is genuinely unclear.
 If retrieval intent is clear but the material expression is a common name or is
 ambiguous between a molecule and a crystalline phase, use clarification_required.
@@ -106,11 +130,29 @@ _NON_RETRIEVAL_ACTION = re.compile(
     r"CONTCAR|structure_file)\b",
     re.IGNORECASE,
 )
+_MIXED_ACTION = re.compile(
+    r"\b(?:relax|optimi[sz]e|calculate|compute|run|simulate|make)\b",
+    re.IGNORECASE,
+)
+_MIXED_TARGET = re.compile(
+    r"\b(?:relax|optimi[sz]e)\s+\S+|\b(?:of|for)\s+\S+|\bMP\s+structure\b",
+    re.IGNORECASE,
+)
+_LOCAL_SOURCE = re.compile(
+    r"\b(?:vasprun\.xml|POSCAR|CONTCAR|structure_file)\b|"
+    r"(?:[A-Za-z]:)?[/\\][^\s]+\.(?:cif|vasp|xyz)\b",
+    re.IGNORECASE,
+)
 _MP_ID = re.compile(r"\bmp-\d+\b", re.IGNORECASE)
 _MP_SOURCE = re.compile(r"\b(?:Materials\s+Project|MP)\b", re.IGNORECASE)
 _FORMULA_TOKEN = re.compile(r"(?<![A-Za-z0-9])(?:[A-Z][a-z]?\d*){1,8}(?![A-Za-z0-9])")
 _CHEMICAL_SYSTEM = re.compile(
     r"(?<![A-Za-z0-9])([A-Z][a-z]?(?:-[A-Z][a-z]?)+)(?![A-Za-z0-9])"
+)
+_NON_FORMULA_TOKENS = {"VASP", "DOS", "MP", "POSCAR", "CONTCAR"}
+_MULTIPLE_INPUT_INTENT = re.compile(
+    r"\b(?:compare|comparison|several|multiple|more\s+than\s+one|all\s+(?:the\s+)?structures)\b",
+    re.IGNORECASE,
 )
 
 
@@ -175,6 +217,31 @@ class StructureRequestApplicabilityClassifier:
                         evidence=explicit_evidence,
                         retry_count=attempt,
                     )
+                if (
+                    _MULTIPLE_INPUT_INTENT.search(source_text)
+                    and self._has_schema_groundable_material(source_text)
+                ):
+                    return StructureApplicabilityResult(
+                        status=ApplicabilityStatus.CLARIFICATION_REQUIRED,
+                        clarification=(
+                            "This workflow currently accepts one authoritative Materials "
+                            "Project structure. Please specify which single structure to use."
+                        ),
+                        retry_count=attempt,
+                    )
+                mixed_evidence = self._mixed_mp_evidence(source_text)
+                if mixed_evidence is not None:
+                    return StructureApplicabilityResult(
+                        status=ApplicabilityStatus.MIXED_MP_STRUCTURE,
+                        evidence=mixed_evidence,
+                        retry_count=attempt,
+                    )
+                if self._is_ungroundable_mixed_request(source_text):
+                    return StructureApplicabilityResult(
+                        status=ApplicabilityStatus.CLARIFICATION_REQUIRED,
+                        clarification=AMBIGUOUS_RETRIEVAL_CLARIFICATION,
+                        retry_count=attempt,
+                    )
                 if self._is_ungroundable_retrieval(source_text):
                     return StructureApplicabilityResult(
                         status=ApplicabilityStatus.CLARIFICATION_REQUIRED,
@@ -191,8 +258,18 @@ class StructureRequestApplicabilityClassifier:
                             clarification=AMBIGUOUS_RETRIEVAL_CLARIFICATION,
                             retry_count=attempt,
                         )
+                elif envelope.status == ApplicabilityStatus.MIXED_MP_STRUCTURE:
+                    if envelope.evidence is None:
+                        raise ValueError("mixed MP classification requires evidence")
+                    self._validate_evidence(source_text, envelope.evidence)
+                    if not self._has_schema_groundable_material(source_text):
+                        return StructureApplicabilityResult(
+                            status=ApplicabilityStatus.CLARIFICATION_REQUIRED,
+                            clarification=AMBIGUOUS_RETRIEVAL_CLARIFICATION,
+                            retry_count=attempt,
+                        )
                 elif envelope.evidence is not None:
-                    raise ValueError("only pure MP classification may include evidence")
+                    raise ValueError("only MP classification may include evidence")
                 return StructureApplicabilityResult(
                     status=envelope.status,
                     evidence=envelope.evidence,
@@ -248,6 +325,8 @@ class StructureRequestApplicabilityClassifier:
                 continue
         for match in _FORMULA_TOKEN.finditer(source_text):
             token = match.group(0)
+            if token.upper() in _NON_FORMULA_TOKENS:
+                continue
             try:
                 composition = Composition(token)
                 if composition.num_atoms > 0 and all(
@@ -274,10 +353,48 @@ class StructureRequestApplicabilityClassifier:
         if anchor is None:
             anchor = _CHEMICAL_SYSTEM.search(source_text)
         if anchor is None:
-            anchor = _FORMULA_TOKEN.search(source_text)
+            anchor = cls._find_formula_match(source_text)
         if anchor is None:
             return None
         return ApplicabilityEvidence(
             retrieval_intent=intent.group(0),
             material_anchor=anchor.group(0),
         )
+
+    @classmethod
+    def _mixed_mp_evidence(cls, source_text: str) -> Optional[ApplicabilityEvidence]:
+        action = _MIXED_ACTION.search(source_text)
+        if action is None or _LOCAL_SOURCE.search(source_text):
+            return None
+        if not cls._has_schema_groundable_material(source_text):
+            return None
+        anchor = _MP_ID.search(source_text) or _CHEMICAL_SYSTEM.search(source_text)
+        if anchor is None:
+            anchor = cls._find_formula_match(source_text)
+        if anchor is None:
+            return None
+        return ApplicabilityEvidence(
+            retrieval_intent=action.group(0), material_anchor=anchor.group(0)
+        )
+
+    @classmethod
+    def _is_ungroundable_mixed_request(cls, source_text: str) -> bool:
+        return bool(
+            not _LOCAL_SOURCE.search(source_text)
+            and _MIXED_ACTION.search(source_text)
+            and _MIXED_TARGET.search(source_text)
+            and not cls._has_schema_groundable_material(source_text)
+        )
+
+    @staticmethod
+    def _find_formula_match(source_text: str) -> Optional[re.Match[str]]:
+        for match in _FORMULA_TOKEN.finditer(source_text):
+            token = match.group(0)
+            if token.upper() in _NON_FORMULA_TOKENS:
+                continue
+            try:
+                Composition(token)
+                return match
+            except (TypeError, ValueError):
+                continue
+        return None

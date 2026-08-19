@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import math
+import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
+import tempfile
 from typing import Any, Callable, Iterable, Optional
 
 from mp_api.client import MPRester
@@ -508,10 +510,20 @@ class StructureResolver:
 
     def _write_selected(self, candidate: _ValidatedCandidate) -> Path:
         self.output_dir.mkdir(parents=True, exist_ok=True)
+        output_dir = self.output_dir.resolve(strict=True)
         material_id = _safe_filename_component(candidate.result.material_id)
         formula = _safe_filename_component(candidate.result.formula)
-        path = self.output_dir / f"{material_id}_{formula}.vasp"
-        candidate.structure.to(filename=str(path), fmt="poscar")
+        path = output_dir / f"{material_id}_{formula}.vasp"
+        descriptor, temporary_name = tempfile.mkstemp(
+            prefix=".vaspilot-structure-", suffix=".tmp", dir=output_dir
+        )
+        os.close(descriptor)
+        temporary_path = Path(temporary_name)
+        try:
+            candidate.structure.to(filename=str(temporary_path), fmt="poscar")
+            os.replace(temporary_path, path)
+        finally:
+            temporary_path.unlink(missing_ok=True)
         return path
 
     def _selection_result(

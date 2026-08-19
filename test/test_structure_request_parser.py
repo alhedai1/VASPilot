@@ -3,7 +3,11 @@ from __future__ import annotations
 import json
 import unittest
 
-from vaspilot.tools.structure_request_parser import ParserStatus, StructureRequestParser
+from vaspilot.tools.structure_request_parser import (
+    ParserMode,
+    ParserStatus,
+    StructureRequestParser,
+)
 
 
 class FakeLLM:
@@ -47,6 +51,89 @@ class StructureRequestParserTests(unittest.TestCase):
         self.assertIsNone(result.request.spacegroup_number)
         self.assertIsNone(result.request.crystal_system)
         self.assertIsNone(result.request.num_sites)
+
+    def test_mixed_mode_owns_single_input_defaults(self):
+        text = "relax 2H-MoS2 using VASP"
+        fake = FakeLLM(
+            [parsed(
+                {"formula": "MoS2", "semantic_label": "2H"},
+                [ev("formula", "MoS2"), ev("semantic_label", "2H")],
+            )]
+        )
+        result = StructureRequestParser(
+            fake, mode=ParserMode.MIXED_SINGLE_INPUT
+        ).parse(text)
+        self.assertEqual(result.status, ParserStatus.PARSED, result.error)
+        self.assertEqual(result.request.operation.value, "select")
+        self.assertEqual(result.request.selection.value, "require_unique")
+        self.assertEqual(result.request.semantic_label, "2H")
+        self.assertIn('"field":"formula","quote":"MoS2"', fake.calls[0][0]["content"])
+
+    def test_mixed_mode_strips_only_the_exact_formula_from_semantic_label(self):
+        text = "relax 2H-MoS2 using VASP"
+        fake = FakeLLM(
+            [parsed(
+                {"formula": "MoS2", "semantic_label": "2H-MoS2"},
+                [ev("formula", "MoS2"), ev("semantic_label", "2H-MoS2")],
+            )]
+        )
+        result = StructureRequestParser(
+            fake, mode=ParserMode.MIXED_SINGLE_INPUT
+        ).parse(text)
+        self.assertEqual(result.status, ParserStatus.PARSED, result.error)
+        self.assertEqual(result.request.semantic_label, "2H")
+
+    def test_mixed_mode_retries_if_explicit_hyphenated_label_is_omitted(self):
+        text = "relax 2H-MoS2 using VASP"
+        fake = FakeLLM(
+            [
+                parsed({"formula": "MoS2"}, [ev("formula", "MoS2")]),
+                parsed(
+                    {"formula": "MoS2", "semantic_label": "2H"},
+                    [ev("formula", "MoS2"), ev("semantic_label", "2H")],
+                ),
+            ]
+        )
+        result = StructureRequestParser(
+            fake, mode=ParserMode.MIXED_SINGLE_INPUT
+        ).parse(text)
+        self.assertEqual(result.status, ParserStatus.PARSED, result.error)
+        self.assertEqual(result.request.semantic_label, "2H")
+        self.assertEqual(result.retry_count, 1)
+
+    def test_mixed_mode_accepts_only_explicit_most_stable(self):
+        text = "calculate the band structure of the most stable MoS2"
+        fake = FakeLLM(
+            [parsed(
+                {"selection": "most_stable", "formula": "MoS2"},
+                [ev("selection", "most stable"), ev("formula", "MoS2")],
+            )]
+        )
+        result = StructureRequestParser(
+            fake, mode=ParserMode.MIXED_SINGLE_INPUT
+        ).parse(text)
+        self.assertEqual(result.status, ParserStatus.PARSED, result.error)
+        self.assertEqual(result.request.selection.value, "most_stable")
+
+    def test_mixed_mode_explicit_id_uses_require_unique(self):
+        text = "run a DOS calculation for mp-2815"
+        fake = FakeLLM(
+            [parsed({"material_ids": ["mp-2815"]}, [ev("material_ids", "mp-2815")])]
+        )
+        result = StructureRequestParser(
+            fake, mode=ParserMode.MIXED_SINGLE_INPUT
+        ).parse(text)
+        self.assertEqual(result.status, ParserStatus.PARSED, result.error)
+        self.assertEqual(result.request.material_ids, ("mp-2815",))
+        self.assertEqual(result.request.selection.value, "require_unique")
+
+    def test_mixed_mode_multiple_inputs_stops_before_llm(self):
+        fake = FakeLLM([])
+        result = StructureRequestParser(
+            fake, mode=ParserMode.MIXED_SINGLE_INPUT
+        ).parse("compare multiple MoS2 structures with VASP")
+        self.assertEqual(result.status, ParserStatus.CLARIFICATION_REQUIRED)
+        self.assertEqual(fake.calls, [])
 
     def test_generic_semantic_wrapper_is_normalized_without_inference(self):
         text = "search for the structure of 2H phase of MoS2"
