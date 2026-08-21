@@ -11,6 +11,7 @@ import yaml
 import math
 import numpy as np
 from .vasp_calculate import vasp_relaxation, vasp_scf, vasp_nscf, check_status, cancel_slurm_job
+from .uma_calculate import uma_relaxation
 from .struct_tools import search_materials_project, analyze_crystal_structure, create_crystal_structure, make_supercell, rotate_structure, symmetrize_structure, scale_structure
 from .sqlite_database import VaspCalculationDB
 def main(config_path: str = None, port: int = 8933, host: str = "0.0.0.0"):
@@ -159,7 +160,20 @@ def main(config_path: str = None, port: int = 8933, host: str = "0.0.0.0"):
         }
         return llm_friendly_result
 
+    @mcp.tool(name="uma_relaxation")
+    async def uma_relaxation_tool(structure_path: str) -> Dict[str, Any]:
+        """Relax a structure with UMA using the external UMA environment.
+
+        Args:
+            structure_path: Path to the input structure file (supports CIF, POSCAR, etc.).
+
+        Returns:
+            The UMA relaxation result.
+        """
+        return uma_relaxation(structure_path)
+
     @mcp.tool(name="vasp_scf")
+    # change soc=true to soc=false
     async def vasp_scf_tool(restart_id: Optional[str] = None, structure_path: Optional[str] = None, soc: bool=True, incar_tags: Optional[Dict] = None, kpoint_num: Optional[tuple[int, int, int]] = None, potcar_map: Optional[Dict] = None) -> Dict[str, Any]:
         """
         Submit a VASP self-consistent field (SCF) job.
