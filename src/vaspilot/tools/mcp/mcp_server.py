@@ -173,6 +173,7 @@ def main(config_path: str = None, port: int = 8933, host: str = "0.0.0.0"):
         return uma_relaxation(structure_path)
 
     @mcp.tool(name="vasp_scf")
+    # change soc=true to soc=false
     async def vasp_scf_tool(restart_id: Optional[str] = None, structure_path: Optional[str] = None, soc: bool=True, incar_tags: Optional[Dict] = None, kpoint_num: Optional[tuple[int, int, int]] = None, potcar_map: Optional[Dict] = None) -> Dict[str, Any]:
         """
         Submit a VASP self-consistent field (SCF) job.

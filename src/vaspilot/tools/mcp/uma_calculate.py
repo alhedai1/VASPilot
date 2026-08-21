@@ -3,8 +3,8 @@ import subprocess
 from typing import Dict, Any
 
 
-UMA_PYTHON = r"C:\Users\iAI\Desktop\VASPilot\uma_env\Scripts\python.exe"
-UMA_RUNNER = r"C:\Users\iAI\Desktop\VASPilot\uma_runner.py"
+UMA_PYTHON = r"/home/ahmed/.conda/envs/uma_env/bin/python"
+UMA_RUNNER = r"/workspace/team/material/VASPilot/src/vaspilot/scripts/uma_runner.py"
 
 
 def uma_relaxation(structure_path: str) -> Dict[str, Any]:
@@ -45,3 +45,4 @@ def uma_relaxation(structure_path: str) -> Dict[str, Any]:
         }
 
     return result
+

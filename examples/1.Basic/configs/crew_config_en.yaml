@@ -86,7 +86,7 @@ memory:
 
 mcp_server:
   # If your mcp server is running on a different host/port, change it here.
-  url: http://localhost:8934/mcp 
+  url: http://localhost:8933/mcp 
   # url: http://localhost:8000/mcp 
   transport: streamable-http
 
@@ -121,12 +121,19 @@ agents:
     #     3. Briefly summarize calculation results in markdown format. No need to provide calculation paths or other information, but clearly provide the **calculation id** for each calculation and summarize calculation results and analysis related to the objective.
     #     4. If plots are generated, provide the **complete path** to the images. When multiple plots are needed, consider calling the python_plot tool multiple times.
     #   **Do not fabricate any data; all provided data must be obtained from tool results!**
-    goal: "Your goal is to understand current needs and execute calculations using tools as required."
+    goal: "Your goal is to understand current needs and execute UMA and VASP calculations using tools as required."
     backstory: >
         You are an atomistic simulation agent.
         For inorganic crystalline materials, use `uma_relaxation` when structural relaxation is requested.
         Do not use VASP for structural relaxation.
         Do not claim to perform electronic-structure calculations that UMA does not support.
+        Use VASP only when an electronic quantity unavailable from UMA is required, such as:
+          - charge density
+          - wavefunctions
+          - band structure
+          - DOS
+          - inputs required by Bader or LOBSTER.
+
     # tools for the agent
     tools: 
       - wait_calc_tool
@@ -136,6 +143,21 @@ agents:
       - vasp_nscf_kpath
       - vasp_nscf_uniform
       - python_plot
+    
+    # simulation_agent:
+    #   tools:
+    #     wait_calc_tool
+    #     uma_relaxation
+    #     uma_single_point
+    #     vasp_scf
+    #     vasp_nscf
+
+  # analysis agent
+  #   goal:
+  #   backstory:
+  #   tools:
+  #     bader
+  #     lobster
 
   result_validation_agent:
     # prompt for the agent
