@@ -76,6 +76,10 @@ agents:
         Crystal structures should be provided as **complete paths** to structure files, not in text format. **Do not fabricate any data; all provided data must be obtained from tool results!**
     # tools for the agent
     tools:
+      - retrieve_bulk_parent
+      - build_surface
+      - build_adsorbate
+      - generate_adsorption_candidates
       - search_materials_project
       - analyze_crystal_structure
       - create_crystal_structure
@@ -95,6 +99,7 @@ agents:
     # tools for the agent
     tools:
       - wait_calc_tool
+      - relax_adsorption_candidates
       - vasp_relaxation
       - vasp_scf
       - vasp_nscf_kpath

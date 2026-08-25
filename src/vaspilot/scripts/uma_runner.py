@@ -8,7 +8,8 @@ from pathlib import Path
 import sys
 
 MODEL = "uma-s-1p2"
-TASK = "omat"
+# TASK = "omat"
+TASK = "oc20"
 FMAX = 0.05
 MAX_STEPS = 200
 

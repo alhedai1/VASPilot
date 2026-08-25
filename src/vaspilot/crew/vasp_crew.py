@@ -43,9 +43,55 @@ class VaspCrew():
 		if self.config['mcp_server'] is not None:
 			mcp_params = copy.deepcopy(self.config['mcp_server'])
 			self.mcp_server = MCPServerAdapter(mcp_params)
-		for tools in self.mcp_server.tools:
-			tool_dict[tools.name] = tools
+			for tool in self.mcp_server.tools:
+				tool_dict[tool.name] = tool
+
+		configured_tools = {
+			tool_name
+			for agent_config in self.config.get("agents", {}).values()
+			if agent_config
+			for tool_name in agent_config.get("tools", [])
+			if tool_name not in {"ask_question_tool", "delegate_work_tool"}
+		}
+		missing_tools = sorted(configured_tools.difference(tool_dict))
+		if missing_tools:
+			available_tools = ", ".join(sorted(tool_dict)) or "none"
+			raise RuntimeError(
+				"Configured agent tools are unavailable from the MCP connection: "
+				f"{', '.join(missing_tools)}. Available tools: {available_tools}. "
+				f"MCP endpoint: {self.config['mcp_server'].get('url', 'not configured')}"
+			)
 		return tool_dict
+
+	def _validate_agent_tools(
+		self, agent_dict: dict[str, Agent], tool_dict: dict[str, Any]
+	) -> None:
+		"""Fail early when a working agent did not receive its configured tools."""
+		for agent_name, agent in agent_dict.items():
+			configured = [
+				tool_name
+				for tool_name in self.config["agents"][agent_name].get("tools", [])
+				if tool_name not in {"ask_question_tool", "delegate_work_tool"}
+			]
+			attached = {
+				getattr(tool, "name", tool.__class__.__name__)
+				for tool in agent.tools
+			}
+			missing = sorted(
+				tool_name
+				for tool_name in configured
+				if not any(tool is tool_dict[tool_name] for tool in agent.tools)
+			)
+			print(
+				f"[VASPilot] Agent '{agent_name}' attached tools: "
+				f"{', '.join(sorted(attached)) or 'none'}",
+				flush=True,
+			)
+			if missing:
+				raise RuntimeError(
+					f"Agent '{agent_name}' is missing configured tools: "
+					f"{', '.join(missing)}"
+				)
 
 	def _inject_agent_tools(self, agent_dict: dict[Agent]) -> Dict[str, Any]:
 		asked_agents = []
@@ -141,6 +187,7 @@ class VaspCrew():
 		agent_dict = self._create_working_agents(tool_dict)
 		manager_agent = self._create_manager_agent()
 		agent_dict = self._inject_agent_tools(agent_dict)
+		self._validate_agent_tools(agent_dict, tool_dict)
 		working_agents = list(agent_dict.values())
 		return Crew(
 			agents=working_agents,

@@ -65,11 +65,11 @@ llm_mapper:
 
 llm_config:
   #Fill in modelname defined in llm_mapper
-  crystal_structure_agent: local-qwen-14b
-  vasp_agent: local-qwen-14b
-  result_validation_agent: local-qwen-14b
-  manager: local-qwen-14b
-  fn_call_llm: local-qwen-14b
+  crystal_structure_agent: lab-qwen30b
+  vasp_agent: lab-qwen30b
+  result_validation_agent: lab-qwen30b
+  manager: lab-qwen30b
+  fn_call_llm: lab-qwen30b
 
 # Setup embedding model for RAG in memory.
 embbeder:
@@ -105,6 +105,11 @@ agents:
         # You must always use a tool. 
     # tools for the agent
     tools: 
+      - retrieve_bulk_parent
+      - build_surface
+      - build_adsorbate
+      - generate_adsorption_candidates
+      - run_adsorption_workflow
       - search_materials_project
       - analyze_crystal_structure
       - create_crystal_structure
@@ -124,7 +129,16 @@ agents:
     goal: "Your goal is to understand current needs and execute UMA and VASP calculations using tools as required."
     backstory: >
         You are an atomistic simulation agent.
+        You must call an available calculation tool whenever the task asks you to
+        execute a calculation. Never claim that a calculation ran unless a tool
+        returned a successful result in the current task. Never invent paths,
+        energies, forces, convergence status, or example results. If required
+        structure paths are missing, report that they are missing instead of
+        using placeholder paths. When the task names a specific tool, use that
+        tool and pass every supplied path and parameter exactly as provided.
         For inorganic crystalline materials, use `uma_relaxation` when structural relaxation is requested.
+        For combined slab-and-adsorbate candidate paths, use
+        `relax_adsorption_candidates`, not `uma_relaxation`.
         Do not use VASP for structural relaxation.
         Do not claim to perform electronic-structure calculations that UMA does not support.
         Use VASP only when an electronic quantity unavailable from UMA is required, such as:
@@ -137,6 +151,7 @@ agents:
     # tools for the agent
     tools: 
       - wait_calc_tool
+      - relax_adsorption_candidates
       # - vasp_relaxation
       - uma_relaxation
       - vasp_scf
@@ -177,11 +192,11 @@ agents:
     goal: Understand user requirements and assign tasks to appropriate agents.
     backstory: >        
         As a team leader, your core responsibilities are:
-            1. Understand user requirements and assign tasks to appropriate agents based on needs. When assigning tasks, only specify overall tasks; specific execution steps are decided by the executors themselves.
+            1. Understand user requirements and assign tasks to appropriate agents based on needs. Include every literal file path, calculation parameter, requested tool name, and relevant tool result in the delegated task or context. Never replace concrete values with summaries or placeholders. If the user explicitly requests a named tool, instruct the responsible agent to call it and require its actual tool result before reporting success.
             2. Team member division of labor:
                 - Crystal Structure Agent: Responsible for crystal structure construction, search, analysis, and manipulation. When users do not specify specific crystal structure paths, the Crystal Structure Agent should first search for or create corresponding structures.
                 - VASP Agent: Execute VASP calculation tasks and generate plots for corresponding calculation results. **All settings required by users must be faithfully provided to the VASP Agent without omission.**
                 - Result Validation Agent: Check whether tasks are completed and whether there are false parts in reports.
-            3. **Do not fabricate any data; all provided data must be obtained from colleague results!**
+            3. **Do not fabricate any data; all provided data must be obtained from colleague tool results!** A colleague response that claims execution but contains no actual tool result is not evidence of completion and must not be reported as successful.
             Use the Result Validation Agent only for VASP calculations, generated scientific claims requiring verification, or when the user explicitly asks for validation. Do not invoke it for a successful database search or file download. Once a coworker returns a successful tool result containing the requested structure path, return that result directly.
             

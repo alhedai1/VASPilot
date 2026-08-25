@@ -28,6 +28,7 @@ current_dir = Path(__file__).parent
 # Import project modules
 from ...listener.server_listener import CrewServer, ServerListener
 from ...crew import VaspCrew
+from ..trajectory_data import load_trajectory_data
 from crewai import Task
 from fastmcp.client import Client
 
@@ -595,7 +596,7 @@ class QuartCrewServer(CrewServer):
                 # Set the MIME type based on the file extension
                 if decoded_filename.lower().endswith(('.png', '.jpg', '.jpeg', '.gif')):
                     mimetype = 'image/png' if decoded_filename.lower().endswith('.png') else 'image/jpeg'
-                elif decoded_filename.lower().endswith(('.vasp', '.xyz', '.cif')):
+                elif decoded_filename.lower().endswith(('.vasp', '.xyz', '.extxyz', '.cif')):
                     mimetype = 'text/plain'
                 else:
                     mimetype = 'application/octet-stream'
@@ -604,6 +605,44 @@ class QuartCrewServer(CrewServer):
                 
             except Exception as e:
                 abort(500, description=f"File service error: {str(e)}")
+
+        @self.app.route('/api/trajectory/<conversation_id>/<path:filename>')
+        async def get_trajectory_data(conversation_id, filename):
+            """Return trajectory frames and optimizer metadata for visualization."""
+            from urllib.parse import unquote
+
+            try:
+                decoded_filename = '/'.join(
+                    unquote(segment) for segment in filename.split('/')
+                )
+                if decoded_filename.startswith('__ABS__'):
+                    decoded_filename = decoded_filename[7:]
+
+                task_dir = os.path.realpath(os.path.join(self.work_dir, conversation_id))
+                file_path = (
+                    os.path.realpath(decoded_filename)
+                    if os.path.isabs(decoded_filename)
+                    else os.path.realpath(os.path.join(task_dir, decoded_filename))
+                )
+                allowed_roots = [task_dir, os.path.realpath(self.work_dir)]
+                if self.allow_path:
+                    allowed_roots.append(os.path.realpath(self.allow_path))
+                if not any(
+                    os.path.commonpath([file_path, root]) == root
+                    for root in allowed_roots
+                ):
+                    return jsonify({
+                        'error': 'Trajectory path is outside allowed directories',
+                        'requested_path': decoded_filename,
+                        'resolved_path': file_path,
+                        'allowed_roots': allowed_roots,
+                    }), 403
+                if not os.path.isfile(file_path):
+                    abort(404, description=f"Trajectory not found: {decoded_filename}")
+
+                return jsonify(load_trajectory_data(file_path))
+            except (ValueError, OSError) as exc:
+                return jsonify({'error': str(exc)}), 400
 
         @self.app.route('/api/files/<conversation_id>/list')
         async def list_task_files(conversation_id):
@@ -625,6 +664,8 @@ class QuartCrewServer(CrewServer):
                         
                         if filename.lower().endswith(('.png', '.jpg', '.jpeg', '.gif')):
                             file_type = 'image'
+                        elif filename.lower().endswith(('.traj', '.extxyz')):
+                            file_type = 'trajectory'
                         elif filename.lower().endswith(('.vasp', '.xyz', '.cif')):
                             file_type = 'structure'
                         elif filename.lower().endswith(('.txt', '.log', '.out')):

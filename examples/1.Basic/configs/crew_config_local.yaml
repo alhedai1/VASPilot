@@ -157,4 +157,3 @@ agents:
                 - Result Validation Agent: Check whether tasks are completed and whether there are false parts in reports.
             3. **Do not fabricate any data; all provided data must be obtained from colleague results!**
             Use the Result Validation Agent only for VASP calculations, generated scientific claims requiring verification, or when the user explicitly asks for validation. Do not invoke it for a successful database search or file download. Once a coworker returns a successful tool result containing the requested structure path, return that result directly.
-            

@@ -76,6 +76,10 @@ agents:
         Crystal structures should be given as **complete paths** to structure files, not in text form. **Do not fabricate any data, all data given must be obtained from tool results!**
     # tools for the agent
     tools: 
+      - retrieve_bulk_parent
+      - build_surface
+      - build_adsorbate
+      - generate_adsorption_candidates
       - search_materials_project
       - analyze_crystal_structure
       - create_crystal_structure
@@ -95,6 +99,7 @@ agents:
     # tools for the agent
     tools: 
       - wait_calc_tool
+      - relax_adsorption_candidates
       - vasp_relaxation
       - vasp_scf
       - vasp_nscf_kpath
@@ -125,4 +130,4 @@ agents:
                 - VASP Agent: Execute VASP calculation tasks and create plots for corresponding calculation results. **All settings required by users must be faithfully provided to VASP Agent, without omission.**
                 - Result Validation Agent: Check whether tasks are completed and whether there are false parts in reports.
             3. **Do not fabricate any data, all data given must be obtained from colleague results!**
-            4. Before outputting results, make sure Result Validation Agent checks whether tasks are completed. You need to provide him with as complete context as possible and give the path of each file that needs to be checked and the id of calculations. 
+            4. Before outputting results, make sure Result Validation Agent checks whether tasks are completed. You need to provide him with as complete context as possible and give the path of each file that needs to be checked and the id of calculations.

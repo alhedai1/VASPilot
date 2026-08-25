@@ -12,6 +12,8 @@
     <script src="https://cdn.jsdelivr.net/npm/marked@4.3.0/marked.min.js"></script>
     <!-- JSMol for crystal structure visualization -->
     <script src="https://chemapps.stolaf.edu/jmol/jsmol/JSmol.min.js"></script>
+    <!-- 3Dmol.js for relaxation trajectory visualization -->
+    <script src="https://3Dmol.org/build/3Dmol-min.js"></script>
     <!-- Mermaid for flowcharts -->
     <script src="https://cdn.jsdelivr.net/npm/mermaid@10.6.1/dist/mermaid.min.js"></script>
     <style>
@@ -142,6 +144,49 @@
         #file-display-area .jsmol-container { 
             text-align: center; 
             padding: 20px; 
+        }
+
+        .trajectory-viewer {
+            max-width: 920px;
+            margin: 0 auto;
+        }
+        .trajectory-canvas {
+            width: 100%;
+            height: 520px;
+            position: relative;
+            border: 1px solid #ced4da;
+            border-radius: 8px;
+            background: linear-gradient(180deg, #f8fbff 0%, #ffffff 100%);
+        }
+        .trajectory-controls {
+            display: flex;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin-top: 12px;
+        }
+        .trajectory-controls input[type="range"] {
+            flex: 1 1 320px;
+        }
+        .trajectory-metrics {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 8px;
+            margin-top: 10px;
+        }
+        .trajectory-metric {
+            background: #f8f9fa;
+            border: 1px solid #e2e6ea;
+            border-radius: 6px;
+            padding: 8px 10px;
+        }
+        .trajectory-energy-chart {
+            width: 100%;
+            height: 170px;
+            margin-top: 12px;
+            border: 1px solid #e2e6ea;
+            border-radius: 6px;
+            background: white;
         }
         
         /* Workflow chart styles */
@@ -458,6 +503,8 @@
         function processCodeElements(content) {
             const filePatterns = [
                 { ext: 'png', buttonClass: 'primary', iconClass: 'image', iconText: 'View image', showFunction: 'showImageFile' },
+                { ext: 'traj', buttonClass: 'warning', iconClass: 'film', iconText: 'View trajectory', showFunction: 'showTrajectoryFile' },
+                { ext: 'extxyz', buttonClass: 'warning', iconClass: 'film', iconText: 'View trajectory', showFunction: 'showTrajectoryFile' },
                 { ext: 'vasp', buttonClass: 'success', iconClass: 'cube', iconText: 'View structure', showFunction: 'showVaspFile' },
                 { ext: 'xyz', buttonClass: 'success', iconClass: 'cube', iconText: 'View structure', showFunction: 'showVaspFile' },
                 { ext: 'cif', buttonClass: 'success', iconClass: 'cube', iconText: 'View structure', showFunction: 'showVaspFile' }
@@ -621,6 +668,15 @@
                         '</button>' +
                     '</span>';
             });
+        }
+
+        // Process relaxation trajectories before .xyz so .extxyz is not
+        // mistaken for a static XYZ structure.
+        try {
+            processedContent = processFilePathsSafely(processedContent, 'traj', 'warning', 'film', 'View trajectory', 'showTrajectoryFile');
+            processedContent = processFilePathsSafely(processedContent, 'extxyz', 'warning', 'film', 'View trajectory', 'showTrajectoryFile');
+        } catch (error) {
+            console.warn('Error processing trajectory paths:', error);
         }
         
         // Process .vasp crystal structure files
@@ -2057,6 +2113,203 @@
         img.src = apiUrl;
     }
     
+    let trajectoryViewers = {};
+
+    function buildTrajectoryApiUrl(filePath) {
+        const taskId = getCurrentTaskId();
+        let processedPath = filePath || '';
+        if (processedPath.startsWith('/')) processedPath = '__ABS__' + processedPath;
+        return '/api/trajectory/' + taskId + '/' + processedPath.split('/').map(encodeURIComponent).join('/');
+    }
+
+    function trajectoryFrameAsXyz(data, frameIndex) {
+        const frame = data.frames[frameIndex];
+        const lines = [String(data.atom_count), 'VASPilot trajectory frame ' + frameIndex];
+        data.symbols.forEach((symbol, index) => {
+            const position = frame.positions[index];
+            lines.push(symbol + ' ' + position[0] + ' ' + position[1] + ' ' + position[2]);
+        });
+        return lines.join('\n');
+    }
+
+    function drawTrajectoryEnergyChart(state) {
+        const canvas = state.chart;
+        const context = canvas.getContext('2d');
+        const width = canvas.width;
+        const height = canvas.height;
+        const margin = {left: 58, right: 18, top: 16, bottom: 32};
+        context.clearRect(0, 0, width, height);
+        context.fillStyle = '#ffffff';
+        context.fillRect(0, 0, width, height);
+        const values = state.data.frames.map(frame => frame.energy_eV);
+        const finite = values.filter(value => Number.isFinite(value));
+        if (!finite.length) {
+            context.fillStyle = '#6c757d';
+            context.fillText('Energy unavailable', 20, 30);
+            return;
+        }
+        let minimum = Math.min(...finite);
+        let maximum = Math.max(...finite);
+        if (maximum === minimum) { maximum += 0.5; minimum -= 0.5; }
+        const plotWidth = width - margin.left - margin.right;
+        const plotHeight = height - margin.top - margin.bottom;
+        const x = index => margin.left + (values.length === 1 ? 0 : index * plotWidth / (values.length - 1));
+        const y = value => margin.top + (maximum - value) * plotHeight / (maximum - minimum);
+        context.strokeStyle = '#adb5bd';
+        context.lineWidth = 1;
+        context.beginPath();
+        context.moveTo(margin.left, margin.top);
+        context.lineTo(margin.left, height - margin.bottom);
+        context.lineTo(width - margin.right, height - margin.bottom);
+        context.stroke();
+        context.strokeStyle = '#1976d2';
+        context.lineWidth = 2;
+        context.beginPath();
+        let started = false;
+        values.forEach((value, index) => {
+            if (!Number.isFinite(value)) return;
+            if (!started) { context.moveTo(x(index), y(value)); started = true; }
+            else context.lineTo(x(index), y(value));
+        });
+        context.stroke();
+        const selectedEnergy = values[state.frame];
+        if (Number.isFinite(selectedEnergy)) {
+            context.fillStyle = '#dc3545';
+            context.beginPath();
+            context.arc(x(state.frame), y(selectedEnergy), 5, 0, Math.PI * 2);
+            context.fill();
+        }
+        context.fillStyle = '#495057';
+        context.font = '12px sans-serif';
+        context.fillText(maximum.toFixed(3), 4, margin.top + 4);
+        context.fillText(minimum.toFixed(3), 4, height - margin.bottom + 4);
+        context.fillText('Energy (eV)', 4, 12);
+        context.fillText('Optimizer frame', width / 2 - 38, height - 8);
+    }
+
+    function addTrajectoryCell(viewer, cell) {
+        if (!cell || cell.length !== 3) return;
+        const origin = [0, 0, 0];
+        const add = (a, b) => a.map((value, index) => value + b[index]);
+        const points = [origin, cell[0], cell[1], cell[2], add(cell[0], cell[1]), add(cell[0], cell[2]), add(cell[1], cell[2]), add(add(cell[0], cell[1]), cell[2])];
+        [[0,1],[0,2],[0,3],[1,4],[1,5],[2,4],[2,6],[3,5],[3,6],[4,7],[5,7],[6,7]].forEach(edge => {
+            const start = points[edge[0]], end = points[edge[1]];
+            viewer.addLine({start:{x:start[0],y:start[1],z:start[2]}, end:{x:end[0],y:end[1],z:end[2]}, color:'#8aa4bd', opacity:0.45, linewidth:1});
+        });
+    }
+
+    function renderTrajectoryFrame(state, frameIndex, fitView=false) {
+        state.frame = Number(frameIndex);
+        state.viewer.removeAllModels();
+        state.viewer.removeAllShapes();
+        const model = state.viewer.addModel(trajectoryFrameAsXyz(state.data, state.frame), 'xyz');
+        model.setStyle({}, {sphere:{scale:0.42}});
+        if (state.data.fixed_atom_indices.length) {
+            model.setStyle({index:state.data.fixed_atom_indices}, {sphere:{scale:0.36, opacity:0.42}});
+        }
+        if (state.data.adsorbate_atom_indices.length) {
+            model.setStyle({index:state.data.adsorbate_atom_indices}, {sphere:{scale:0.62}, stick:{radius:0.14}});
+        }
+        addTrajectoryCell(state.viewer, state.data.cell);
+        if (fitView) state.viewer.zoomTo();
+        state.viewer.render();
+        state.slider.value = state.frame;
+        state.frameLabel.textContent = (state.frame + 1) + ' / ' + state.data.frame_count;
+        const frame = state.data.frames[state.frame];
+        state.energyLabel.textContent = Number.isFinite(frame.energy_eV) ? frame.energy_eV.toFixed(6) + ' eV' : 'Unavailable';
+        state.forceLabel.textContent = Number.isFinite(frame.max_force_eV_per_A) ? frame.max_force_eV_per_A.toFixed(4) + ' eV/Å' : 'Unavailable';
+        drawTrajectoryEnergyChart(state);
+    }
+
+    function toggleTrajectoryPlayback(viewerId) {
+        const state = trajectoryViewers[viewerId];
+        if (!state) return;
+        if (state.timer) {
+            clearInterval(state.timer);
+            state.timer = null;
+            state.playButton.innerHTML = '<i class="fas fa-play"></i> Play';
+            return;
+        }
+        state.playButton.innerHTML = '<i class="fas fa-pause"></i> Pause';
+        const interval = Math.round(1000 / Number(state.speed.value));
+        state.timer = setInterval(() => {
+            renderTrajectoryFrame(state, (state.frame + 1) % state.data.frame_count);
+        }, interval);
+    }
+
+    function showTrajectoryFile(filePath, buttonId) {
+        const displayArea = document.getElementById('file-display-area');
+        const displayTitle = document.getElementById('file-display-title');
+        const displayContent = document.getElementById('file-display-content');
+        const viewerId = 'trajectory_' + Date.now();
+        displayTitle.textContent = 'Relaxation trajectory: ' + filePath;
+        displayContent.innerHTML = '<div class="text-center p-4"><div class="spinner-border text-warning"></div><div class="mt-2">Loading trajectory...</div></div>';
+        displayArea.style.display = 'block';
+        displayArea.scrollIntoView({behavior:'smooth'});
+
+        fetch(buildTrajectoryApiUrl(filePath)).then(response => {
+            if (!response.ok) return response.json().catch(() => ({})).then(body => {
+                const details = [
+                    body.error || 'HTTP ' + response.status,
+                    body.requested_path ? 'Requested: ' + body.requested_path : '',
+                    body.resolved_path ? 'Resolved: ' + body.resolved_path : '',
+                    body.allowed_roots ? 'Allowed: ' + body.allowed_roots.join(', ') : ''
+                ].filter(Boolean).join('\n');
+                throw new Error(details);
+            });
+            return response.json();
+        }).then(data => {
+            if (typeof $3Dmol === 'undefined') throw new Error('3Dmol.js did not load');
+            displayContent.innerHTML = `
+                <div class="trajectory-viewer">
+                    <div id="${viewerId}" class="trajectory-canvas"></div>
+                    <div class="trajectory-controls">
+                        <button class="btn btn-sm btn-outline-secondary" data-action="previous"><i class="fas fa-step-backward"></i></button>
+                        <button class="btn btn-sm btn-primary" data-action="play"><i class="fas fa-play"></i> Play</button>
+                        <button class="btn btn-sm btn-outline-secondary" data-action="next"><i class="fas fa-step-forward"></i></button>
+                        <input type="range" min="0" max="${data.frame_count - 1}" value="0" step="1" aria-label="Trajectory frame">
+                        <span class="badge bg-secondary" data-role="frame"></span>
+                        <select class="form-select form-select-sm" data-role="speed" style="width:auto"><option value="2">2 fps</option><option value="5" selected>5 fps</option><option value="10">10 fps</option></select>
+                        <button class="btn btn-sm btn-outline-info" data-action="fit"><i class="fas fa-expand"></i> Fit</button>
+                    </div>
+                    <div class="trajectory-metrics">
+                        <div class="trajectory-metric"><small class="text-muted">Energy</small><div data-role="energy"></div></div>
+                        <div class="trajectory-metric"><small class="text-muted">Maximum force</small><div data-role="force"></div></div>
+                        <div class="trajectory-metric"><small class="text-muted">Atoms / frames</small><div>${data.atom_count} / ${data.frame_count}</div></div>
+                    </div>
+                    <canvas class="trajectory-energy-chart" width="880" height="170"></canvas>
+                    <div class="small text-muted mt-2">Fixed atoms are faded. Adsorbate atoms are enlarged.${data.adsorbate_indices_inferred ? ' Adsorbate indices were inferred from minority elements.' : ''}</div>
+                </div>`;
+            const root = displayContent.querySelector('.trajectory-viewer');
+            const state = {
+                data:data, frame:0, timer:null,
+                viewer:$3Dmol.createViewer(document.getElementById(viewerId), {backgroundColor:'white', antialias:true}),
+                slider:root.querySelector('input[type="range"]'),
+                frameLabel:root.querySelector('[data-role="frame"]'),
+                energyLabel:root.querySelector('[data-role="energy"]'),
+                forceLabel:root.querySelector('[data-role="force"]'),
+                speed:root.querySelector('[data-role="speed"]'),
+                playButton:root.querySelector('[data-action="play"]'),
+                chart:root.querySelector('canvas')
+            };
+            trajectoryViewers[viewerId] = state;
+            state.slider.addEventListener('input', event => renderTrajectoryFrame(state, event.target.value));
+            state.playButton.addEventListener('click', () => toggleTrajectoryPlayback(viewerId));
+            root.querySelector('[data-action="previous"]').addEventListener('click', () => renderTrajectoryFrame(state, Math.max(0, state.frame - 1)));
+            root.querySelector('[data-action="next"]').addEventListener('click', () => renderTrajectoryFrame(state, Math.min(data.frame_count - 1, state.frame + 1)));
+            root.querySelector('[data-action="fit"]').addEventListener('click', () => { state.viewer.zoomTo(); state.viewer.render(); });
+            state.speed.addEventListener('change', () => { if (state.timer) { toggleTrajectoryPlayback(viewerId); toggleTrajectoryPlayback(viewerId); } });
+            renderTrajectoryFrame(state, 0, true);
+        }).catch(error => {
+            displayContent.innerHTML = '';
+            const alert = document.createElement('div');
+            alert.className = 'alert alert-danger';
+            alert.style.whiteSpace = 'pre-wrap';
+            alert.textContent = 'Failed to load trajectory: ' + String(error.message);
+            displayContent.appendChild(alert);
+        });
+    }
+
     // Show the VASP crystal structure file
     function showVaspFile(filePath, buttonId) {
         const taskId = getCurrentTaskId();
@@ -2119,6 +2372,11 @@
     function closeFileDisplay() {
         const displayArea = document.getElementById('file-display-area');
         displayArea.style.display = 'none';
+
+        Object.values(trajectoryViewers).forEach(state => {
+            if (state.timer) clearInterval(state.timer);
+        });
+        trajectoryViewers = {};
         
         // Clean up the JSMol instance
         const displayContent = document.getElementById('file-display-content');
@@ -2374,6 +2632,9 @@
         if (refreshInterval) {
             clearInterval(refreshInterval);
         }
+        Object.values(trajectoryViewers).forEach(state => {
+            if (state.timer) clearInterval(state.timer);
+        });
     });
     
     // Global function, called from HTML onclick
@@ -2381,6 +2642,7 @@
     window.resetVaspView = resetVaspView;
     window.showImageFile = showImageFile;
     window.showVaspFile = showVaspFile;
+    window.showTrajectoryFile = showTrajectoryFile;
     window.closeFileDisplay = closeFileDisplay;
     window.downloadFile = downloadFile;
     window.stopTask = stopTask;
@@ -2388,4 +2650,4 @@
     window.downloadByFilePath = downloadByFilePath;
     </script>
 </body>
-</html> 
+</html>

@@ -1,6 +1,6 @@
 import os
 from pathlib import Path
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Literal
 from .python_plot import safe_execute_plot_code
 import uuid
 from fastmcp import FastMCP
@@ -12,7 +12,9 @@ import math
 import numpy as np
 from .vasp_calculate import vasp_relaxation, vasp_scf, vasp_nscf, check_status, cancel_slurm_job
 from .uma_calculate import uma_relaxation
-from .struct_tools import search_materials_project, analyze_crystal_structure, create_crystal_structure, make_supercell, rotate_structure, symmetrize_structure, scale_structure
+from .adsorption_tools import generate_adsorption_candidates, relax_adsorption_candidates
+from .adsorption_workflow import run_adsorption_workflow
+from .struct_tools import search_materials_project, retrieve_bulk_parent, build_surface, build_adsorbate, analyze_crystal_structure, create_crystal_structure, make_supercell, rotate_structure, symmetrize_structure, scale_structure
 from .sqlite_database import VaspCalculationDB
 def main(config_path: str = None, port: int = 8933, host: str = "0.0.0.0"):
 
@@ -670,6 +672,175 @@ def main(config_path: str = None, port: int = 8933, host: str = "0.0.0.0"):
         """
         result = search_materials_project(api_key=mp_api_key, search_criteria=search_criteria, download_path=structure_path, limit=limit)
         return result
+
+    @mcp.tool(name="retrieve_bulk_parent")
+    async def retrieve_bulk_parent_tool(
+        formula: Optional[str] = None,
+        material_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Retrieve one reproducibly selected bulk parent from Materials Project.
+
+        Use this before constructing a surface slab. Pass an exact Materials
+        Project ID when the user specifies one; otherwise pass the bulk formula.
+        Surface Miller indices and adsorbates do not belong in this call.
+
+        Args:
+            formula: Exact bulk chemical formula, e.g. "Pt" or "TiO2".
+            material_id: Optional exact Materials Project ID, e.g. "mp-126".
+
+        Returns:
+            The selected bulk structure path and Materials Project provenance.
+        """
+        return retrieve_bulk_parent(
+            api_key=mp_api_key,
+            download_path=structure_path,
+            formula=formula,
+            material_id=material_id,
+        )
+
+    @mcp.tool(name="build_surface")
+    async def build_surface_tool(
+        bulk_structure_path: str,
+        miller_index: List[int],
+        min_slab_size: float = 10.0,
+        min_vacuum_size: float = 15.0,
+        lateral_supercell: List[int] = [4, 4],
+        fixed_bottom_layers: int = 2,
+        orthogonalize_c: bool = False,
+        termination_policy: Literal["lowest_shift", "index"] = "lowest_shift",
+        termination_index: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Build a validated surface slab from a bulk parent structure.
+
+        Defaults preserve the proof-of-concept behavior: a minimum 10 A slab,
+        15 A vacuum, a 4x4 lateral supercell, and two fixed bottom layers.
+
+        Args:
+            bulk_structure_path: Complete path returned by retrieve_bulk_parent.
+            miller_index: Three-integer surface Miller index, e.g. [1, 1, 1].
+            min_slab_size: Minimum slab thickness in angstrom.
+            min_vacuum_size: Minimum vacuum thickness in angstrom.
+            lateral_supercell: Positive in-plane repetitions, e.g. [4, 4].
+            fixed_bottom_layers: Number of bottom atomic layers to constrain.
+            orthogonalize_c: Align c with the Cartesian surface normal.
+            termination_policy: ``lowest_shift`` or ``index``.
+            termination_index: Stable zero-based termination index for ``index``.
+
+        Returns:
+            The slab path, fixed atom indices, construction settings, and
+            termination-selection metadata.
+        """
+        return build_surface(
+            bulk_structure_path,
+            miller_index,
+            min_slab_size,
+            min_vacuum_size,
+            lateral_supercell,
+            fixed_bottom_layers,
+            orthogonalize_c,
+            termination_policy,
+            termination_index,
+        )
+
+    @mcp.tool(name="build_adsorbate")
+    async def build_adsorbate_tool(adsorbate: str) -> Dict[str, Any]:
+        """Build a validated standalone adsorbate structure.
+
+        Supported adsorbates are H, O, N, CO, OH, H2O, and CO2. Binding atoms
+        are selected from a curated registry; the agent must not provide or
+        invent coordinates.
+
+        Args:
+            adsorbate: Adsorbate formula, e.g. "CO".
+
+        Returns:
+            XYZ path, atom ordering, binding atom, charge, and multiplicity.
+        """
+        return build_adsorbate(adsorbate, structure_path)
+
+    @mcp.tool(name="generate_adsorption_candidates")
+    async def generate_adsorption_candidates_tool(
+        slab_structure_path: str,
+        adsorbate_structure_path: str,
+        binding_atom_indices: List[int],
+        num_sites: int = 10,
+        num_orientations_per_site: int = 1,
+    ) -> Dict[str, Any]:
+        """Generate reproducible adsorbate-on-slab starting configurations.
+
+        This creates unrelaxed, unranked candidates with FAIR Chemistry. It is
+        generic over slab and adsorbate artifacts and does not contain
+        material- or molecule-specific placement rules.
+
+        Args:
+            slab_structure_path: Complete path returned by build_surface.
+            adsorbate_structure_path: Complete path returned by build_adsorbate.
+            binding_atom_indices: Zero-based indices returned by build_adsorbate.
+            num_sites: Maximum heuristic site target, from 1 to 100.
+            num_orientations_per_site: Orientations per site, from 1 to 20.
+
+        Returns:
+            Candidate structure paths and placement-generation metadata.
+        """
+        return generate_adsorption_candidates(
+            slab_structure_path=slab_structure_path,
+            adsorbate_structure_path=adsorbate_structure_path,
+            binding_atom_indices=binding_atom_indices,
+            num_sites=num_sites,
+            num_orientations_per_site=num_orientations_per_site,
+        )
+
+    @mcp.tool(name="relax_adsorption_candidates")
+    async def relax_adsorption_candidates_tool(
+        candidate_structure_paths: List[str],
+        fmax: float = 0.05,
+        max_steps: int = 200,
+    ) -> Dict[str, Any]:
+        """Relax and rank adsorption candidates with UMA using the OC20 task.
+
+        The cell remains fixed, existing atom constraints are preserved, and
+        every candidate gets an ASE trajectory, an extxyz trajectory, a log,
+        and a final VASP structure. Energies are comparable only because this
+        tool requires identical atom ordering, composition, and cells.
+
+        Args:
+            candidate_structure_paths: VASP paths from candidate generation.
+            fmax: Force convergence threshold in eV/A.
+            max_steps: Maximum LBFGS steps per candidate.
+
+        Returns:
+            Ranked candidate results and trajectory artifact paths.
+        """
+        return relax_adsorption_candidates(
+            candidate_structure_paths=candidate_structure_paths,
+            fmax=fmax,
+            max_steps=max_steps,
+        )
+
+    @mcp.tool(name="run_adsorption_workflow")
+    async def run_adsorption_workflow_tool(
+        miller_index: List[int],
+        adsorbate: str,
+        formula: Optional[str] = None,
+        material_id: Optional[str] = None,
+        num_sites: int = 10,
+        num_orientations_per_site: int = 1,
+        fmax: float = 0.05,
+        max_steps: int = 200,
+    ) -> Dict[str, Any]:
+        """Run bulk retrieval through candidate relaxation as one operation."""
+        return run_adsorption_workflow(
+            api_key=mp_api_key,
+            download_path=structure_path,
+            formula=formula,
+            material_id=material_id,
+            miller_index=miller_index,
+            adsorbate=adsorbate,
+            num_sites=num_sites,
+            num_orientations_per_site=num_orientations_per_site,
+            fmax=fmax,
+            max_steps=max_steps,
+        )
 
     @mcp.tool(name="analyze_crystal_structure")
     async def analyze_crystal_structure_tool(struct_path: str) -> Dict[str, Any]:
