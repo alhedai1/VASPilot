@@ -71,6 +71,13 @@ llm_config:
   manager: lab-qwen30b
   fn_call_llm: lab-qwen30b
 
+# llm_config:
+#   crystal_structure_agent: gpt-5.6-terra-tools
+#   vasp_agent: gpt-5.6-terra-tools
+#   result_validation_agent: gpt-5.6-terra-tools
+#   manager: gpt-5.6-terra-tools
+#   fn_call_llm: gpt-5.6-terra-tools
+
 # Setup embedding model for RAG in memory.
 embbeder:
   url: http://localhost:11434/v1/embeddings
