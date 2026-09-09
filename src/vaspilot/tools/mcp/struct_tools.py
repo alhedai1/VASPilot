@@ -2,6 +2,7 @@ import os
 import hashlib
 import json
 import traceback
+from pathlib import Path
 from typing import Dict, Any, List, Optional, Union, Literal
 import numpy as np
 from pymatgen.core import Structure, Lattice
@@ -357,7 +358,7 @@ def build_surface(
     miller_index: List[int],
     min_slab_size: float = 10.0,
     min_vacuum_size: float = 15.0,
-    lateral_supercell: List[int] = [3, 3],
+    lateral_supercell: List[int] = [4, 4],
     fixed_bottom_layers: int = 2,
     orthogonalize_c: bool = False,
     termination_policy: Literal["lowest_shift", "index"] = "lowest_shift",
@@ -468,6 +469,14 @@ def build_surface(
                 site_properties=slab.site_properties,
             )
             a_vector, b_vector, c_vector = slab.lattice.matrix
+        fractional_coords = slab.frac_coords.copy()
+        fractional_coords[:, :2] %= 1.0
+        slab = Structure(
+            slab.lattice,
+            slab.species,
+            fractional_coords,
+            site_properties=slab.site_properties,
+        )
         heights = np.dot(slab.cart_coords, surface_normal)
 
         layers: List[List[float]] = []
@@ -493,7 +502,8 @@ def build_surface(
             ],
         )
 
-        provenance = {"input_sha256": input_sha256, "request": request,
+        provenance = {"builder_schema_version": 2,
+                      "input_sha256": input_sha256, "request": request,
                       "selected_termination_index": selected_index,
                       "selected_termination_shift": selected_shift}
         artifact_id = hashlib.sha256(
@@ -532,6 +542,7 @@ def build_surface(
             "estimated_vacuum_thickness_A": cell_height - slab_thickness,
             "surface_metadata": {
                 "bulk_standardization": "conventional_standard_structure",
+                "builder_schema_version": 2,
                 "construction_parameters": request,
                 "minimum_slab_thickness_A": min_slab_size,
                 "minimum_vacuum_thickness_A": min_vacuum_size,
@@ -553,51 +564,126 @@ def build_surface(
 
 
 def build_adsorbate(
-    adsorbate: str,
+    adsorbate: Optional[str],
     output_directory: str,
+    source_structure_path: Optional[str] = None,
+    binding_atom_indices: Optional[List[int]] = None,
+    charge: Optional[int] = None,
+    multiplicity: Optional[int] = None,
 ) -> Dict[str, Any]:
-    """Build a validated adsorbate from a small curated ASE-backed registry."""
+    """Build a validated adsorbate from ASE defaults or a molecular file."""
     registry = {
-        "H": {"binding_element": "H", "charge": 0, "multiplicity": 2},
-        "O": {"binding_element": "O", "charge": 0, "multiplicity": 3},
-        "N": {"binding_element": "N", "charge": 0, "multiplicity": 4},
-        "CO": {"binding_element": "C", "charge": 0, "multiplicity": 1},
-        "OH": {"binding_element": "O", "charge": 0, "multiplicity": 2},
-        "H2O": {"binding_element": "O", "charge": 0, "multiplicity": 1},
-        "CO2": {"binding_element": "C", "charge": 0, "multiplicity": 1},
+        "H": {"binding_indices": [0], "charge": 0, "multiplicity": 2},
+        "O": {"binding_indices": [0], "charge": 0, "multiplicity": 3},
+        "N": {"binding_indices": [0], "charge": 0, "multiplicity": 4},
+        "CO": {"binding_indices": [1], "charge": 0, "multiplicity": 1},
+        "OH": {"binding_indices": [0], "charge": 0, "multiplicity": 2},
+        "H2O": {"binding_indices": [0], "charge": 0, "multiplicity": 1},
+        "CO2": {"binding_indices": [0], "charge": 0, "multiplicity": 1},
     }
 
-    if not isinstance(adsorbate, str) or not adsorbate.strip():
-        return {"success": False, "error": "adsorbate must be a non-empty string"}
+    def fail(message: str) -> Dict[str, Any]:
+        return {"success": False, "error": message}
 
-    adsorbate_name = adsorbate.strip().upper()
-    if adsorbate_name not in registry:
-        return {
-            "success": False,
-            "error": (
-                f"Unsupported adsorbate '{adsorbate}'. Supported adsorbates: "
-                f"{', '.join(registry)}"
-            ),
-        }
+    if adsorbate is not None and (not isinstance(adsorbate, str) or not adsorbate.strip()):
+        return fail("adsorbate must be a non-empty string when provided")
+    if not adsorbate and not source_structure_path:
+        return fail("adsorbate or source_structure_path must be provided")
+    if source_structure_path and not os.path.isfile(source_structure_path):
+        return fail(f"Adsorbate structure file does not exist: {source_structure_path}")
+    if charge is not None and (not isinstance(charge, int) or isinstance(charge, bool)):
+        return fail("charge must be an integer")
+    if multiplicity is not None and (
+        not isinstance(multiplicity, int) or isinstance(multiplicity, bool) or multiplicity < 1
+    ):
+        return fail("multiplicity must be a positive integer")
 
     try:
         from ase import Atoms
         from ase.build import molecule
-        from ase.io import write
+        from ase.data import atomic_numbers
+        from ase.io import read, write
 
-        atoms = (
-            Atoms(adsorbate_name)
-            if adsorbate_name in {"H", "O", "N"}
-            else molecule(adsorbate_name)
-        )
-        metadata = registry[adsorbate_name]
+        adsorbate_name = adsorbate.strip() if adsorbate else None
+        defaults = registry.get(adsorbate_name, {})
+        if source_structure_path:
+            atoms = read(source_structure_path)
+            source = "user_structure_file"
+            source_sha256 = hashlib.sha256(Path(source_structure_path).read_bytes()).hexdigest()
+            adsorbate_name = adsorbate_name or atoms.get_chemical_formula()
+        else:
+            is_element = adsorbate_name in atomic_numbers
+            if is_element:
+                atoms = Atoms(adsorbate_name)
+            else:
+                try:
+                    atoms = molecule(adsorbate_name)
+                except KeyError:
+                    return {
+                        "success": False,
+                        "error_code": "adsorbate_geometry_unavailable",
+                        "error": (
+                            f"ASE has no molecular geometry named '{adsorbate_name}'. "
+                            "Provide source_structure_path and binding_atom_indices."
+                        ),
+                        "retryable": False,
+                        "required_inputs": [
+                            "source_structure_path",
+                            "binding_atom_indices",
+                        ],
+                    }
+            source = "ASE elemental atom" if is_element else "ASE molecule library"
+            source_sha256 = None
+        if not len(atoms):
+            return fail("Adsorbate structure contains no atoms")
+        if any(atoms.pbc):
+            return fail("Adsorbate structure must be non-periodic")
+
         symbols = atoms.get_chemical_symbols()
-        binding_element = metadata["binding_element"]
-        binding_atom_index = symbols.index(binding_element)
+        indices = binding_atom_indices if binding_atom_indices is not None else defaults.get("binding_indices")
+        if indices is None and len(atoms) == 1:
+            indices = [0]
+        if not indices:
+            return fail("binding_atom_indices are required for adsorbates without curated defaults")
+        if (
+            not isinstance(indices, (list, tuple))
+            or not all(isinstance(index, int) and not isinstance(index, bool) for index in indices)
+            or len(set(indices)) != len(indices)
+            or any(index < 0 or index >= len(atoms) for index in indices)
+        ):
+            return fail("binding_atom_indices must be unique, valid zero-based atom indices")
+        final_charge = charge if charge is not None else defaults.get("charge")
+        final_multiplicity = multiplicity if multiplicity is not None else defaults.get("multiplicity")
+        charge_source = "user" if charge is not None else "curated" if "charge" in defaults else "unspecified"
+        multiplicity_source = (
+            "user" if multiplicity is not None
+            else "curated" if "multiplicity" in defaults
+            else "unspecified"
+        )
+
+        request = {
+            "adsorbate": adsorbate_name,
+            "source": source,
+            "source_structure_path": os.path.abspath(source_structure_path) if source_structure_path else None,
+            "source_sha256": source_sha256,
+            "binding_atom_indices": list(indices),
+            "charge": final_charge,
+            "multiplicity": final_multiplicity,
+            "charge_source": charge_source,
+            "multiplicity_source": multiplicity_source,
+        }
+        geometry = {
+            "symbols": symbols,
+            "positions_A": np.asarray(atoms.positions).round(12).tolist(),
+        }
+        artifact_id = hashlib.sha256(
+            json.dumps({"request": request, "geometry": geometry}, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()[:16]
 
         os.makedirs(output_directory, exist_ok=True)
+        safe_name = "".join(character for character in adsorbate_name if character.isalnum() or character in "-_")
         output_path = os.path.abspath(
-            os.path.join(output_directory, f"adsorbate_{adsorbate_name}.xyz")
+            os.path.join(output_directory, f"adsorbate_{safe_name}_{artifact_id}.xyz")
         )
         write(output_path, atoms, format="xyz")
 
@@ -606,15 +692,18 @@ def build_adsorbate(
             "error": None,
             "structure_kind": "adsorbate",
             "adsorbate": adsorbate_name,
+            "artifact_id": artifact_id,
             "adsorbate_structure_path": output_path,
             "chemical_symbols": symbols,
             "num_atoms": len(atoms),
-            "binding_atom_indices": [binding_atom_index],
+            "binding_atom_indices": list(indices),
             "binding_indexing": "zero_based",
-            "binding_atom_elements": [binding_element],
-            "charge": metadata["charge"],
-            "multiplicity": metadata["multiplicity"],
-            "construction_source": "ASE molecule library",
+            "binding_atom_elements": [symbols[index] for index in indices],
+            "charge": final_charge,
+            "multiplicity": final_multiplicity,
+            "electronic_state_specified": final_charge is not None and final_multiplicity is not None,
+            "construction_source": source,
+            "construction_metadata": request,
             "orientation_policy": "deferred_to_candidate_generation",
         }
     except Exception as e:

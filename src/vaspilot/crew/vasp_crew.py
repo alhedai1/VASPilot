@@ -189,33 +189,84 @@ class VaspCrew():
 		agent_dict = self._inject_agent_tools(agent_dict)
 		self._validate_agent_tools(agent_dict, tool_dict)
 		working_agents = list(agent_dict.values())
-		return Crew(
-			agents=working_agents,
-			tasks=[],
-			process=Process.hierarchical,
-			verbose=True,
-			output_log_file=f"{work_dir}/output.log",
-			manager_agent=manager_agent,
-			# Try disabling memory
-			# memory=True,
-			memory=False,
-			# long_term_memory = LongTermMemory(
-        	# 	storage=LTMSQLiteStorage(
-            # 		db_path=f"{work_dir}/memory/ltm_storage.db",
-        	# 	)
-    		# ),
-			# short_term_memory = ShortTermMemory(
-			# 	storage = RAGStorage(
-			# 		type="short_term",
-			# 		path=f"{work_dir}/memory/stm",
-			# 	embedder_config=embedder_config
-			# 	),
-			# ),
-			# entity_memory = EntityMemory(
-			# 	storage=RAGStorage(
-			# 		type="short_term",
-			# 		path=f"{work_dir}/memory/etm",
-			# 	embedder_config=embedder_config
-			# 	),
-    		# ),
-		)
+
+		memory_config = self.config.get("memory", {})
+		memory_enabled = memory_config.get("enabled", False)
+
+		crew_kwargs = {
+			"agents": working_agents,
+			"tasks": [],
+			"process": Process.hierarchical,
+			"verbose": True,
+			"output_log_file": f"{work_dir}/output.log",
+			"manager_agent": manager_agent,
+			"memory": memory_enabled,
+		}
+
+		if memory_enabled:
+			os.makedirs(f"{work_dir}/memory", exist_ok=True)
+
+			embedder_config = {
+				"provider": "custom",
+				"config": {
+					"embedding_callable": LocalAPIEmbedder,
+					"url": self.config["embbeder"]["url"],
+					"model_id": self.config["embbeder"]["model_id"],
+					"api_key": self.config["embbeder"]["api_key"],
+				},
+			}
+
+			crew_kwargs.update({
+				"long_term_memory": LongTermMemory(
+					storage=LTMSQLiteStorage(
+						db_path=f"{work_dir}/memory/ltm_storage.db"
+					)
+				),
+				"short_term_memory": ShortTermMemory(
+					storage=RAGStorage(
+						type="short_term",
+						path=f"{work_dir}/memory/stm",
+						embedder_config=embedder_config,
+					)
+				),
+				"entity_memory": EntityMemory(
+					storage=RAGStorage(
+						type="entities",
+						path=f"{work_dir}/memory/etm",
+						embedder_config=embedder_config,
+					)
+				),
+			})
+
+		return Crew(**crew_kwargs)
+		
+		# return Crew(
+		# 	agents=working_agents,
+		# 	tasks=[],
+		# 	process=Process.hierarchical,
+		# 	verbose=True,
+		# 	output_log_file=f"{work_dir}/output.log",
+		# 	manager_agent=manager_agent,
+		# 	# Try disabling memory
+		# 	# memory=False,
+		# 	memory=memory_enabled,
+		# 	long_term_memory = LongTermMemory(
+        # 		storage=LTMSQLiteStorage(
+        #     		db_path=f"{work_dir}/memory/ltm_storage.db",
+        # 		)
+    	# 	),
+		# 	short_term_memory = ShortTermMemory(
+		# 		storage = RAGStorage(
+		# 			type="short_term",
+		# 			path=f"{work_dir}/memory/stm",
+		# 		embedder_config=embedder_config
+		# 		),
+		# 	),
+		# 	entity_memory = EntityMemory(
+		# 		storage=RAGStorage(
+		# 			type="entities",
+		# 			path=f"{work_dir}/memory/etm",
+		# 		embedder_config=embedder_config
+		# 		),
+    	# 	),
+		# )

@@ -30,12 +30,15 @@ def test_builds_default_constrained_pt_111_slab(bulk_path):
     assert result["fixed_atom_indices"]
     assert result["surface_metadata"]["lateral_supercell"] == [4, 4]
     assert result["surface_metadata"]["construction_parameters"]["orthogonalize_c"] is False
+    assert result["surface_metadata"]["builder_schema_version"] == 2
     assert len(result["artifact_id"]) == 16
     assert result["artifact_id"] in Path(result["slab_structure_path"]).name
 
     slab_path = Path(result["slab_structure_path"])
     assert slab_path.is_file()
     slab = Poscar.from_file(slab_path).structure
+    assert np.all(slab.frac_coords[:, :2] >= -1e-12)
+    assert np.all(slab.frac_coords[:, :2] < 1 + 1e-12)
     selective_dynamics = slab.site_properties["selective_dynamics"]
     assert len(slab) == result["num_atoms"]
     assert any(list(flags) == [False, False, False] for flags in selective_dynamics)

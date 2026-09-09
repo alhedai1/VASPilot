@@ -19,14 +19,15 @@ MCP_CONFIG="${MCP_CONFIG:-$SCRIPT_DIR/configs/mcp_config.yaml}"
 MCP_PORT="${MCP_PORT:-8933}"
 
 # Prefer a local (untracked, personal) crew config if present, else the tracked default.
-if [ -f "$SCRIPT_DIR/configs/crew_config_local.yaml" ]; then
-    CREW_CONFIG_DEFAULT="$SCRIPT_DIR/configs/crew_config_local.yaml"
-else
-    CREW_CONFIG_DEFAULT="$SCRIPT_DIR/configs/crew_config.yaml"
-fi
+# if [ -f "$SCRIPT_DIR/configs/crew_config_local.yaml" ]; then
+#     CREW_CONFIG_DEFAULT="$SCRIPT_DIR/configs/crew_config_local.yaml"
+# else
+#     CREW_CONFIG_DEFAULT="$SCRIPT_DIR/configs/crew_config.yaml"
+# fi
+CREW_CONFIG_DEFAULT="$SCRIPT_DIR/configs/crew_config_en.yaml"
 CREW_CONFIG="${CREW_CONFIG:-$CREW_CONFIG_DEFAULT}"
 CREW_PORT="${CREW_PORT:-51293}"
-WORK_DIR="${WORK_DIR:-$SCRIPT_DIR/crew_server/work}"
+WORK_DIR="${WORK_DIR:-$SCRIPT_DIR/crew_server/work-test-uma-retrieval}"
 ALLOW_PATH="${ALLOW_PATH:-$REPO_ROOT}"
 MAX_CONCURRENT_TASKS="${MAX_CONCURRENT_TASKS:-2}"
 MAX_QUEUE_SIZE="${MAX_QUEUE_SIZE:-10}"

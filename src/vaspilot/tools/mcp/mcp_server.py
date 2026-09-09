@@ -1,4 +1,5 @@
 import os
+import json
 from pathlib import Path
 from typing import Dict, Any, Optional, List, Literal
 from .python_plot import safe_execute_plot_code
@@ -13,6 +14,15 @@ import numpy as np
 from .vasp_calculate import vasp_relaxation, vasp_scf, vasp_nscf, check_status, cancel_slurm_job
 from .uma_calculate import uma_relaxation
 from .adsorption_tools import generate_adsorption_candidates, relax_adsorption_candidates
+from .adsorption_energy import (
+    calculate_adsorption_energies,
+    prepare_adsorption_energy_calculations,
+)
+from .adsorption_analysis import (
+    load_analysis_scf_submission,
+    prepare_adsorption_analysis_scf,
+    write_analysis_scf_submission,
+)
 from .adsorption_workflow import run_adsorption_workflow
 from .struct_tools import search_materials_project, retrieve_bulk_parent, build_surface, build_adsorbate, analyze_crystal_structure, create_crystal_structure, make_supercell, rotate_structure, symmetrize_structure, scale_structure
 from .sqlite_database import VaspCalculationDB
@@ -174,16 +184,14 @@ def main(config_path: str = None, port: int = 8933, host: str = "0.0.0.0"):
         """
         return uma_relaxation(structure_path)
 
-    @mcp.tool(name="vasp_scf")
-    # change soc=true to soc=false
-    async def vasp_scf_tool(restart_id: Optional[str] = None, structure_path: Optional[str] = None, soc: bool=True, incar_tags: Optional[Dict] = None, kpoint_num: Optional[tuple[int, int, int]] = None, potcar_map: Optional[Dict] = None) -> Dict[str, Any]:
+    async def _submit_vasp_scf(restart_id: Optional[str] = None, structure_path: Optional[str] = None, soc: bool=False, incar_tags: Optional[Dict] = None, kpoint_num: Optional[tuple[int, int, int]] = None, potcar_map: Optional[Dict] = None) -> Dict[str, Any]:
         """
         Submit a VASP self-consistent field (SCF) job.
         
         Args:
             restart_id: ID of a previous calculation. If provided, reuse its structure and charge density.
             structure_path: Path to the structure file; required when restart_id is not provided.
-            soc: Whether to include spin–orbit coupling. Defaults to True.
+            soc: Whether to include spin–orbit coupling. Defaults to False.
             incar_tags: Additional INCAR parameters to merge with defaults. Use None unless explicitly specified by the user.
             kpoint_num: K-point mesh as a tuple (nx, ny, nz). If not provided, an automatic density of 40 is used.
             potcar_map: POTCAR mapping as {element: potcar}, e.g., {"Bi": "Bi_pv", "Se": "Se_pv"}. Use None unless explicitly specified by the user.
@@ -228,6 +236,8 @@ def main(config_path: str = None, port: int = 8933, host: str = "0.0.0.0"):
             incar.update(settings['VASP_default_INCAR']['scf_nsoc'])
         if incar_tags is not None:
             incar.update(incar_tags)
+        if incar.get("ISPIN", 1) == 1 and not incar.get("LSORBIT", False):
+            incar.pop("MAGMOM", None)
         
         # Run the calculation
         result = vasp_scf(
@@ -258,6 +268,13 @@ def main(config_path: str = None, port: int = 8933, host: str = "0.0.0.0"):
             'calculate_path': result['calculate_path']
         }
         return llm_friendly_result
+
+    @mcp.tool(name="vasp_scf")
+    async def vasp_scf_tool(restart_id: Optional[str] = None, structure_path: Optional[str] = None, soc: bool=False, incar_tags: Optional[Dict] = None, kpoint_num: Optional[tuple[int, int, int]] = None, potcar_map: Optional[Dict] = None) -> Dict[str, Any]:
+        """Submit a generic VASP SCF calculation."""
+        return await _submit_vasp_scf(
+            restart_id, structure_path, soc, incar_tags, kpoint_num, potcar_map
+        )
 
     @mcp.tool(name="vasp_nscf_kpath")
     async def vasp_nscf_kpath_tool(restart_id: str, soc: bool=True, incar_tags: Optional[Dict] = None, kpath: Optional[str] = None, n_kpoints: Optional[int] = None, potcar_map: Optional[Dict] = None) -> Dict[str, Any]:
@@ -743,20 +760,40 @@ def main(config_path: str = None, port: int = 8933, host: str = "0.0.0.0"):
         )
 
     @mcp.tool(name="build_adsorbate")
-    async def build_adsorbate_tool(adsorbate: str) -> Dict[str, Any]:
+    async def build_adsorbate_tool(
+        adsorbate: Optional[str] = None,
+        source_structure_path: Optional[str] = None,
+        binding_atom_indices: Optional[List[int]] = None,
+        charge: Optional[int] = None,
+        multiplicity: Optional[int] = None,
+    ) -> Dict[str, Any]:
         """Build a validated standalone adsorbate structure.
 
-        Supported adsorbates are H, O, N, CO, OH, H2O, and CO2. Binding atoms
-        are selected from a curated registry; the agent must not provide or
-        invent coordinates.
+        H, O, N, CO, OH, H2O, and CO2 have backward-compatible curated
+        defaults. Exact case-sensitive element symbols create single atoms;
+        other names use ASE's molecule library. A supplied molecular file takes
+        precedence. Charge and multiplicity are optional isolated-species
+        metadata and are not required for geometry construction.
 
         Args:
-            adsorbate: Adsorbate formula, e.g. "CO".
+            adsorbate: Element symbol or ASE molecule name; case is significant.
+            source_structure_path: Optional complete path to a molecular file.
+            binding_atom_indices: Optional unique zero-based binding indices.
+            charge: Optional integer isolated-species charge.
+            multiplicity: Optional positive isolated-species spin multiplicity.
 
         Returns:
-            XYZ path, atom ordering, binding atom, charge, and multiplicity.
+            XYZ path and metadata, or a non-retryable structured error when ASE
+            has no geometry and a source structure file is required.
         """
-        return build_adsorbate(adsorbate, structure_path)
+        return build_adsorbate(
+            adsorbate,
+            structure_path,
+            source_structure_path,
+            binding_atom_indices,
+            charge,
+            multiplicity,
+        )
 
     @mcp.tool(name="generate_adsorption_candidates")
     async def generate_adsorption_candidates_tool(
@@ -765,6 +802,13 @@ def main(config_path: str = None, port: int = 8933, host: str = "0.0.0.0"):
         binding_atom_indices: List[int],
         num_sites: int = 10,
         num_orientations_per_site: int = 1,
+        max_generated_candidates: int = 1000,
+        placement_mode: Literal[
+            "heuristic", "random", "random_site_heuristic_placement"
+        ] = "heuristic",
+        random_seed: int = 0,
+        interstitial_gap: float = 0.1,
+        surface_layer_tolerance: float = 0.5,
     ) -> Dict[str, Any]:
         """Generate reproducible adsorbate-on-slab starting configurations.
 
@@ -776,8 +820,13 @@ def main(config_path: str = None, port: int = 8933, host: str = "0.0.0.0"):
             slab_structure_path: Complete path returned by build_surface.
             adsorbate_structure_path: Complete path returned by build_adsorbate.
             binding_atom_indices: Zero-based indices returned by build_adsorbate.
-            num_sites: Maximum heuristic site target, from 1 to 100.
-            num_orientations_per_site: Orientations per site, from 1 to 20.
+            num_sites: Positive maximum selected site count.
+            num_orientations_per_site: Positive orientations per selected site.
+            max_generated_candidates: Maximum allowed product of sites and orientations.
+            placement_mode: FAIR Chemistry site and placement strategy.
+            random_seed: Seed controlling deterministic site/orientation sampling.
+            interstitial_gap: Extra adsorbate-surface separation in angstrom.
+            surface_layer_tolerance: Top-layer height tolerance in angstrom.
 
         Returns:
             Candidate structure paths and placement-generation metadata.
@@ -788,13 +837,29 @@ def main(config_path: str = None, port: int = 8933, host: str = "0.0.0.0"):
             binding_atom_indices=binding_atom_indices,
             num_sites=num_sites,
             num_orientations_per_site=num_orientations_per_site,
+            max_generated_candidates=max_generated_candidates,
+            placement_mode=placement_mode,
+            random_seed=random_seed,
+            interstitial_gap=interstitial_gap,
+            surface_layer_tolerance=surface_layer_tolerance,
         )
 
     @mcp.tool(name="relax_adsorption_candidates")
     async def relax_adsorption_candidates_tool(
-        candidate_structure_paths: List[str],
+        candidate_structure_paths: Optional[List[str]] = None,
+        candidate_set: Optional[Dict[str, Any]] = None,
+        candidate_manifest_path: Optional[str] = None,
         fmax: float = 0.05,
         max_steps: int = 200,
+        calculator_backend: Literal["fairchem"] = "fairchem",
+        model: str = "uma-s-1p2",
+        task: str = "oc20",
+        device: Literal["auto", "cpu", "cuda"] = "auto",
+        precision: Literal["float32", "float64"] = "float32",
+        optimizer: Literal["LBFGS", "BFGS", "FIRE"] = "LBFGS",
+        desorption_distance: float = 4.0,
+        penetration_depth: float = 1.0,
+        severe_slab_displacement: float = 2.0,
     ) -> Dict[str, Any]:
         """Relax and rank adsorption candidates with UMA using the OC20 task.
 
@@ -804,18 +869,167 @@ def main(config_path: str = None, port: int = 8933, host: str = "0.0.0.0"):
         tool requires identical atom ordering, composition, and cells.
 
         Args:
-            candidate_structure_paths: VASP paths from candidate generation.
+            candidate_structure_paths: Validated VASP paths from candidate generation.
+            candidate_set: Complete typed result from candidate generation; use instead of paths.
+            candidate_manifest_path: Candidate manifest returned by generation; preferred across agent handoffs.
             fmax: Force convergence threshold in eV/A.
             max_steps: Maximum LBFGS steps per candidate.
+            calculator_backend: Calculator implementation (currently fairchem).
+            model: FAIR Chemistry pretrained model name.
+            task: FAIR Chemistry prediction task.
+            device: Automatic, CPU, or CUDA execution.
+            precision: Model inference precision.
+            optimizer: ASE ionic optimizer.
+            desorption_distance: Distance threshold for desorption diagnostics.
+            penetration_depth: Depth below the top layer considered penetration.
+            severe_slab_displacement: Slab displacement warning threshold.
 
         Returns:
             Ranked candidate results and trajectory artifact paths.
         """
         return relax_adsorption_candidates(
             candidate_structure_paths=candidate_structure_paths,
+            candidate_set=candidate_set,
+            candidate_manifest_path=candidate_manifest_path,
             fmax=fmax,
             max_steps=max_steps,
+            calculator_backend=calculator_backend,
+            model=model,
+            task=task,
+            device=device,
+            precision=precision,
+            optimizer=optimizer,
+            desorption_distance=desorption_distance,
+            penetration_depth=penetration_depth,
+            severe_slab_displacement=severe_slab_displacement,
         )
+
+    @mcp.tool(name="prepare_adsorption_energy_calculations")
+    async def prepare_adsorption_energy_calculations_tool(
+        relaxation_manifest_path: str,
+        clean_slab_structure_path: str,
+        adsorbate_structure_path: str,
+        output_directory: Optional[str] = None,
+        top_k: Optional[int] = None,
+        method: Literal["vasp_dft", "ml_screening"] = "vasp_dft",
+        method_settings: Optional[Dict[str, Any]] = None,
+        isolated_adsorbate_box_size: float = 20.0,
+        adsorbate_charge: int = 0,
+        adsorbate_multiplicity: int = 1,
+        reject_geometry_warnings: bool = True,
+    ) -> Dict[str, Any]:
+        """Prepare a consistent clean-slab, molecule, and top-k candidate set.
+
+        This tool validates and writes calculation inputs but does not submit
+        jobs. Submit the returned entries with the requested calculator tool.
+        """
+        try:
+            return prepare_adsorption_energy_calculations(
+                relaxation_manifest=relaxation_manifest_path,
+                clean_slab_structure_path=clean_slab_structure_path,
+                adsorbate_structure_path=adsorbate_structure_path,
+                output_directory=output_directory or structure_path,
+                top_k=top_k,
+                method=method,
+                method_settings=method_settings,
+                isolated_adsorbate_box_size=isolated_adsorbate_box_size,
+                adsorbate_charge=adsorbate_charge,
+                adsorbate_multiplicity=adsorbate_multiplicity,
+                reject_geometry_warnings=reject_geometry_warnings,
+            )
+        except (ValueError, FileNotFoundError, json.JSONDecodeError) as exc:
+            return {
+                "success": False,
+                "error_code": "invalid_adsorption_energy_preparation",
+                "error": str(exc),
+                "retryable": False,
+            }
+
+    @mcp.tool(name="prepare_adsorption_analysis_scf")
+    async def prepare_adsorption_analysis_scf_tool(
+        relaxation_manifest_path: str,
+        analyses: Optional[List[Literal["bader", "lobster"]]] = None,
+        candidate_id: Optional[str] = None,
+        kpoint_num: Optional[List[int]] = None,
+        incar_overrides: Optional[Dict[str, Any]] = None,
+        output_directory: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Select a converged UMA candidate and prepare a static VASP SCF.
+
+        The default selection is the lowest final UMA energy among converged,
+        geometrically valid candidates. This writes an immutable input artifact
+        and returns exact arguments for a subsequent vasp_scf call; it does not
+        submit VASP or run Bader/LOBSTER.
+        """
+        try:
+            return prepare_adsorption_analysis_scf(
+                relaxation_manifest=relaxation_manifest_path,
+                output_directory=output_directory or structure_path,
+                analyses=analyses,
+                candidate_id=candidate_id,
+                kpoint_num=kpoint_num,
+                incar_overrides=incar_overrides,
+            )
+        except (ValueError, FileNotFoundError, json.JSONDecodeError) as exc:
+            return {
+                "success": False,
+                "error_code": "invalid_adsorption_analysis_scf_preparation",
+                "error": str(exc),
+                "retryable": False,
+            }
+
+    @mcp.tool(name="submit_adsorption_analysis_scf")
+    async def submit_adsorption_analysis_scf_tool(
+        preparation_manifest_path: str,
+    ) -> Dict[str, Any]:
+        """Validate a prepared adsorption-analysis artifact and submit its SCF.
+
+        The exact structure, INCAR settings, SOC choice, and k-point mesh are
+        loaded from the manifest. They cannot be replaced by agent-supplied
+        values. A durable submission manifest links the preparation to the VASP
+        calculation and prevents accidental successful resubmission.
+        """
+        try:
+            path, arguments = load_analysis_scf_submission(preparation_manifest_path)
+        except (ValueError, FileNotFoundError, json.JSONDecodeError, TypeError) as exc:
+            return {
+                "success": False,
+                "error_code": "invalid_adsorption_analysis_scf_submission",
+                "error": str(exc),
+                "retryable": False,
+            }
+        result = await _submit_vasp_scf(**arguments)
+        return write_analysis_scf_submission(path, result)
+
+    @mcp.tool(name="calculate_adsorption_energies")
+    async def calculate_adsorption_energies_tool(
+        candidate_energy_records: List[Dict[str, Any]],
+        clean_slab_energy_record: Dict[str, Any],
+        adsorbate_energy_record: Dict[str, Any],
+        output_directory: Optional[str] = None,
+        corrections: Optional[Dict[str, Dict[str, float]]] = None,
+    ) -> Dict[str, Any]:
+        """Calculate adsorption energies from compatible converged records.
+
+        Each record must provide energy_eV, converged, and the identical
+        method_signature. Candidate records must also provide candidate_id.
+        Corrections are reported separately from electronic adsorption energy.
+        """
+        try:
+            return calculate_adsorption_energies(
+                candidate_energy_records=candidate_energy_records,
+                clean_slab_energy_record=clean_slab_energy_record,
+                adsorbate_energy_record=adsorbate_energy_record,
+                output_directory=output_directory or structure_path,
+                corrections=corrections,
+            )
+        except (ValueError, FileNotFoundError) as exc:
+            return {
+                "success": False,
+                "error_code": "invalid_adsorption_energy_records",
+                "error": str(exc),
+                "retryable": False,
+            }
 
     @mcp.tool(name="run_adsorption_workflow")
     async def run_adsorption_workflow_tool(

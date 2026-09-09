@@ -1,7 +1,7 @@
 import json
 import subprocess
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Literal, Optional
 
 from .uma_calculate import UMA_PYTHON
 
@@ -20,6 +20,13 @@ def generate_adsorption_candidates(
     binding_atom_indices: List[int],
     num_sites: int = 10,
     num_orientations_per_site: int = 1,
+    max_generated_candidates: int = 1000,
+    placement_mode: Literal[
+        "heuristic", "random", "random_site_heuristic_placement"
+    ] = "heuristic",
+    random_seed: int = 0,
+    interstitial_gap: float = 0.1,
+    surface_layer_tolerance: float = 0.5,
 ) -> Dict[str, Any]:
     """Generate adsorbate-on-slab starting configurations in the UMA environment."""
     try:
@@ -32,6 +39,11 @@ def generate_adsorption_candidates(
                 ",".join(str(index) for index in binding_atom_indices),
                 str(num_sites),
                 str(num_orientations_per_site),
+                str(max_generated_candidates),
+                placement_mode,
+                str(random_seed),
+                str(interstitial_gap),
+                str(surface_layer_tolerance),
             ],
             capture_output=True,
             text=True,
@@ -65,19 +77,44 @@ def generate_adsorption_candidates(
 
 
 def relax_adsorption_candidates(
-    candidate_structure_paths: List[str],
+    candidate_structure_paths: Optional[List[str]] = None,
+    candidate_set: Optional[Dict[str, Any]] = None,
+    candidate_manifest_path: Optional[str] = None,
     fmax: float = 0.05,
     max_steps: int = 200,
+    calculator_backend: Literal["fairchem"] = "fairchem",
+    model: str = "uma-s-1p2",
+    task: str = "oc20",
+    device: Literal["auto", "cpu", "cuda"] = "auto",
+    precision: Literal["float32", "float64"] = "float32",
+    optimizer: Literal["LBFGS", "BFGS", "FIRE"] = "LBFGS",
+    desorption_distance: float = 4.0,
+    penetration_depth: float = 1.0,
+    severe_slab_displacement: float = 2.0,
 ) -> Dict[str, Any]:
     """Relax and rank an equal-composition set of adsorption candidates."""
+    request = {
+        "candidate_structure_paths": candidate_structure_paths,
+        "candidate_set": candidate_set,
+        "candidate_manifest_path": candidate_manifest_path,
+        "fmax": fmax,
+        "max_steps": max_steps,
+        "calculator_backend": calculator_backend,
+        "model": model,
+        "task": task,
+        "device": device,
+        "precision": precision,
+        "optimizer": optimizer,
+        "desorption_distance_A": desorption_distance,
+        "penetration_depth_A": penetration_depth,
+        "severe_slab_displacement_A": severe_slab_displacement,
+    }
     try:
         process = subprocess.run(
             [
                 UMA_PYTHON,
                 ADSORPTION_RELAXATION_RUNNER,
-                json.dumps(candidate_structure_paths),
-                str(fmax),
-                str(max_steps),
+                json.dumps(request),
             ],
             capture_output=True,
             text=True,
