@@ -45,7 +45,6 @@ agents:
         Crystal structures should be provided as **complete paths** to structure files, not in text format. **Do not fabricate any data; all provided data must be obtained from tool results!**
     # tools for the agent
     tools:
-      - retrieve_bulk_parent
       - build_surface
       - build_adsorbate
       - generate_adsorption_candidates

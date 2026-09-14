@@ -119,7 +119,6 @@ agents:
         artifact-producing result to one requested metadata field.
     # tools for the agent
     tools: 
-      - retrieve_bulk_parent
       - build_surface
       - build_adsorbate
       - generate_adsorption_candidates

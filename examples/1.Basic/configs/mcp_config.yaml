@@ -38,6 +38,7 @@ VASP_default_INCAR:
     NELM: 120
     MAGMOM: "5000*0"
   nscf_nsoc:
+    ICHARG: 11
     NCORE: 4
     PREC: 'Accurate'
     ISMEAR: 0

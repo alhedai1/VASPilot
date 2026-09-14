@@ -24,7 +24,7 @@ from .adsorption_analysis import (
     write_analysis_scf_submission,
 )
 from .adsorption_workflow import run_adsorption_workflow
-from .struct_tools import search_materials_project, retrieve_bulk_parent, build_surface, build_adsorbate, analyze_crystal_structure, create_crystal_structure, make_supercell, rotate_structure, symmetrize_structure, scale_structure
+from .struct_tools import search_materials_project, build_surface, build_adsorbate, analyze_crystal_structure, create_crystal_structure, make_supercell, rotate_structure, symmetrize_structure, scale_structure
 from .sqlite_database import VaspCalculationDB
 def main(config_path: str = None, port: int = 8933, host: str = "0.0.0.0"):
 
@@ -670,6 +670,10 @@ def main(config_path: str = None, port: int = 8933, host: str = "0.0.0.0"):
     @mcp.tool(name="search_materials_project")
     async def search_materials_project_tool(search_criteria: Dict[str, Any], limit: int = 10) -> Dict[str, Any]:
         """
+        Search Materials Project and download matching structures. Each result
+        contains a downloaded_file path ready for analysis or slab construction.
+        Reuse the selected file; no separate retrieval is needed.
+
         Args:
             search_criteria: Search filters with the following keys:
                 - material_id: str, e.g., "mp-1234"
@@ -690,31 +694,6 @@ def main(config_path: str = None, port: int = 8933, host: str = "0.0.0.0"):
         result = search_materials_project(api_key=mp_api_key, search_criteria=search_criteria, download_path=structure_path, limit=limit)
         return result
 
-    @mcp.tool(name="retrieve_bulk_parent")
-    async def retrieve_bulk_parent_tool(
-        formula: Optional[str] = None,
-        material_id: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        """Retrieve one reproducibly selected bulk parent from Materials Project.
-
-        Use this before constructing a surface slab. Pass an exact Materials
-        Project ID when the user specifies one; otherwise pass the bulk formula.
-        Surface Miller indices and adsorbates do not belong in this call.
-
-        Args:
-            formula: Exact bulk chemical formula, e.g. "Pt" or "TiO2".
-            material_id: Optional exact Materials Project ID, e.g. "mp-126".
-
-        Returns:
-            The selected bulk structure path and Materials Project provenance.
-        """
-        return retrieve_bulk_parent(
-            api_key=mp_api_key,
-            download_path=structure_path,
-            formula=formula,
-            material_id=material_id,
-        )
-
     @mcp.tool(name="build_surface")
     async def build_surface_tool(
         bulk_structure_path: str,
@@ -733,7 +712,8 @@ def main(config_path: str = None, port: int = 8933, host: str = "0.0.0.0"):
         15 A vacuum, a 4x4 lateral supercell, and two fixed bottom layers.
 
         Args:
-            bulk_structure_path: Complete path returned by retrieve_bulk_parent.
+            bulk_structure_path: Complete path to an existing bulk structure,
+                such as downloaded_file returned by search_materials_project.
             miller_index: Three-integer surface Miller index, e.g. [1, 1, 1].
             min_slab_size: Minimum slab thickness in angstrom.
             min_vacuum_size: Minimum vacuum thickness in angstrom.
