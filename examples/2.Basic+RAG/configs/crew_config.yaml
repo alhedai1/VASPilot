@@ -49,6 +49,17 @@ tool_params:
     agents:
       - retrieve_agent
 
+agent_prompt_prefix: |
+  Adsorption candidate counts are upper bounds, not required totals. If generation
+  succeeds with fewer candidates because fewer sites are available, including
+  symmetry-reduced heuristic sites, report the actual count and continue with
+  those candidates. Do not retry, raise the budget, or change placement mode solely
+  to reach the upper bound. Preserve the requested and actual counts in reports.
+  Hand off candidate artifact IDs, counts, and complete manifest paths rather than
+  copying candidate lists or per-candidate diagnostics into messages. For relaxation,
+  pass the returned manifest_path as candidate_manifest_path; the compact generation
+  summary is not a complete candidate_set.
+
 agents:
 
   retrieve_agent:

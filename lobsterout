@@ -1,0 +1,8 @@
+LOBSTER v6.0.0 (g++ 9.3.0)
+Copyright (C) 2026 by Chair of Solid-State and Quantum Chemistry, RWTH Aachen.
+All rights reserved. Contributions by S. Maintz, V. L. Deringer, M. Esser, R. Nelson, C. Ertural, P. C. Mueller, L. S. Reitz, M. Pauls, L. Sann, D. Schnieders, A. L. Tchougreeff, and R. Dronskowski
+starting on host gpusystem on 2026-09-25 at 05:49:34 UTC using 64 threads
+detecting used PAW program...
+ERROR: could not determine which program was used for the quantum-chemical calculation.
+ERROR: Make sure all required files are in the working directory and are not empty.
+

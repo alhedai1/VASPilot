@@ -702,7 +702,7 @@ def main(config_path: str = None, port: int = 8933, host: str = "0.0.0.0"):
         min_vacuum_size: float = 15.0,
         lateral_supercell: List[int] = [4, 4],
         fixed_bottom_layers: int = 2,
-        orthogonalize_c: bool = False,
+        orthogonalize_c: bool = True,
         termination_policy: Literal["lowest_shift", "index"] = "lowest_shift",
         termination_index: Optional[int] = None,
     ) -> Dict[str, Any]:
@@ -796,11 +796,17 @@ def main(config_path: str = None, port: int = 8933, host: str = "0.0.0.0"):
         generic over slab and adsorbate artifacts and does not contain
         material- or molecule-specific placement rules.
 
+        Counts are upper bounds, not guaranteed totals. Heuristic site finding
+        removes symmetry-equivalent sites and may return fewer sites than
+        requested. A successful result with fewer candidates is not an error:
+        report the actual count and continue. Do not retry, raise the budget,
+        or switch placement modes solely to reach the requested upper bound.
+
         Args:
             slab_structure_path: Complete path returned by build_surface.
             adsorbate_structure_path: Complete path returned by build_adsorbate.
             binding_atom_indices: Zero-based indices returned by build_adsorbate.
-            num_sites: Positive maximum selected site count.
+            num_sites: Positive maximum selected site count, not a required total.
             num_orientations_per_site: Positive orientations per selected site.
             max_generated_candidates: Maximum allowed product of sites and orientations.
             placement_mode: FAIR Chemistry site and placement strategy.
@@ -809,7 +815,11 @@ def main(config_path: str = None, port: int = 8933, host: str = "0.0.0.0"):
             surface_layer_tolerance: Top-layer height tolerance in angstrom.
 
         Returns:
-            Candidate structure paths and placement-generation metadata.
+            Compact status, artifact ID, actual candidate count, generation
+            metadata, and manifest_path. Full per-candidate paths and diagnostics
+            are persisted in that manifest, not included in this response.
+            Pass manifest_path as candidate_manifest_path to
+            relax_adsorption_candidates; do not pass this summary as candidate_set.
         """
         return generate_adsorption_candidates(
             slab_structure_path=slab_structure_path,
@@ -822,6 +832,7 @@ def main(config_path: str = None, port: int = 8933, host: str = "0.0.0.0"):
             random_seed=random_seed,
             interstitial_gap=interstitial_gap,
             surface_layer_tolerance=surface_layer_tolerance,
+            include_candidate_details=False,
         )
 
     @mcp.tool(name="relax_adsorption_candidates")
@@ -850,8 +861,8 @@ def main(config_path: str = None, port: int = 8933, host: str = "0.0.0.0"):
 
         Args:
             candidate_structure_paths: Validated VASP paths from candidate generation.
-            candidate_set: Complete typed result from candidate generation; use instead of paths.
-            candidate_manifest_path: Candidate manifest returned by generation; preferred across agent handoffs.
+            candidate_set: Full candidate artifact including its candidates list; not the compact generation summary.
+            candidate_manifest_path: Preferred input: the manifest_path returned by generation. Supply this alone instead of copying candidate lists or paths.
             fmax: Force convergence threshold in eV/A.
             max_steps: Maximum LBFGS steps per candidate.
             calculator_backend: Calculator implementation (currently fairchem).

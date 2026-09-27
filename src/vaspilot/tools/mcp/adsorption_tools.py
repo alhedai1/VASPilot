@@ -27,8 +27,14 @@ def generate_adsorption_candidates(
     random_seed: int = 0,
     interstitial_gap: float = 0.1,
     surface_layer_tolerance: float = 0.5,
+    *,
+    include_candidate_details: bool = True,
 ) -> Dict[str, Any]:
-    """Generate adsorbate-on-slab starting configurations in the UMA environment."""
+    """Generate starting configurations, optionally omitting persisted details.
+
+    Internal workflows retain the full candidate list by default. MCP callers
+    use a compact result and hand its manifest_path to the relaxation tool.
+    """
     try:
         process = subprocess.run(
             [
@@ -73,6 +79,16 @@ def generate_adsorption_candidates(
             "error": process.stderr.strip()
             or f"Adsorption candidate subprocess exited with code {process.returncode}",
         }
+    if result.get("success") is True and not include_candidate_details:
+        result = {key: value for key, value in result.items() if key != "candidates"}
+        result["message"] = (
+            "Candidate counts are upper bounds. Fewer available sites, including "
+            "after symmetry reduction in heuristic mode, are a successful outcome. "
+            "Report the actual count and continue using the candidates in manifest_path; "
+            "do not retry or change placement mode solely to reach the upper bound. "
+            "Full candidate details are stored in manifest_path. Pass that path as "
+            "candidate_manifest_path to relax_adsorption_candidates."
+        )
     return result
 
 

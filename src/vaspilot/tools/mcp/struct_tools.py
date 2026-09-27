@@ -360,7 +360,7 @@ def build_surface(
     min_vacuum_size: float = 15.0,
     lateral_supercell: List[int] = [4, 4],
     fixed_bottom_layers: int = 2,
-    orthogonalize_c: bool = False,
+    orthogonalize_c: bool = True,
     termination_policy: Literal["lowest_shift", "index"] = "lowest_shift",
     termination_index: Optional[int] = None,
 ) -> Dict[str, Any]:
