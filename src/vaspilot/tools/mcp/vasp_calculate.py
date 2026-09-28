@@ -1,11 +1,16 @@
+import json
 import os
 import time
+from pathlib import Path
 import subprocess
 import shutil
 from pymatgen.core import Element, Structure
-from pymatgen.io.vasp import VaspInput, Vasprun, Kpoints, Poscar, Potcar
+from pymatgen.io.vasp import VaspInput, Vasprun, Kpoints, Poscar, Potcar, Incar
 from typing import Optional, Dict, Any
 import numpy as np
+
+from .bader_analysis import parse_acf
+from .vasp_input_consistency import input_provenance
 
 
 def _submit_slurm_job(calc_type: str, calculate_path: str, 
@@ -29,6 +34,11 @@ def _submit_slurm_job(calc_type: str, calculate_path: str,
                 src_file = os.path.join(attachment_path, file_name)
                 dst_file = os.path.join(calculate_path, file_name)
                 if os.path.isfile(src_file):
+                    if file_name in {"POSCAR", "INCAR", "KPOINTS", "POTCAR", "CHGCAR", "WAVECAR"}:
+                        return {"slurm_id": None, "calc_type": calc_type,
+                                "calculate_path": calculate_path, "success": False,
+                                "error": f"Attachment cannot supply or replace VASP input {file_name}",
+                                "status": "failed"}
                     shutil.copy2(src_file, dst_file)
 
         # Locate the SLURM script file
@@ -138,13 +148,17 @@ def vasp_relaxation(calculation_id: str, work_dir: str, struct: Structure,
     os.makedirs(rlx_dir, exist_ok=True)
     vasp_input.write_input(rlx_dir)
 
-    # Submit the SLURM job
-    return _submit_slurm_job("relaxation", rlx_dir, attachment_path)
+    # Record the exact inputs that were written, including the POTCAR identity.
+    provenance = input_provenance(rlx_dir)
+    result = _submit_slurm_job("relaxation", rlx_dir, attachment_path)
+    result["input_provenance"] = provenance
+    return result
 
 
 def vasp_scf(calculation_id: str, work_dir: str, struct: Structure, 
             kpoints: Kpoints, incar_dict: dict, chgcar_path: Optional[str] = None, 
-            wavecar_path: Optional[str] = None, attachment_path: Optional[str] = None, potcar_map: Optional[Dict] = None) -> Dict[str, Any]:
+            wavecar_path: Optional[str] = None, attachment_path: Optional[str] = None, potcar_map: Optional[Dict] = None,
+            source_potcar_path: Optional[str] = None) -> Dict[str, Any]:
     """
     Submit a VASP self-consistent field (SCF) calculation task
 
@@ -155,8 +169,9 @@ def vasp_scf(calculation_id: str, work_dir: str, struct: Structure,
         kpoints: K-point settings
         incar_dict: Additional INCAR parameters, merged with the defaults. Do not modify these on your own unless the user specifies it.
         chgcar_path: Path to the CHGCAR file
-        wavecar_path: Path to the WAVECAR file
+        wavecar_path: Path to the WAVECAR file when ISTART requests it
         attachment_path: Attachment path containing the SLURM script and other files
+        source_potcar_path: Exact POTCAR from a completed VASP restart
 
     Returns:
         Dict containing slurm_id, calc_type, calculate_path, success, error, status, etc.
@@ -184,17 +199,23 @@ def vasp_scf(calculation_id: str, work_dir: str, struct: Structure,
     for symbol in unique_species:
         potcar_symbols.append(potcar_map[symbol])
 
-    vasp_input = VaspInput(
-        poscar=poscar,
-        incar=incar_dict,
-        kpoints=kpoints,
-        potcar=Potcar(potcar_symbols)
-    )
-
-    # Prepare the SCF calculation directory
+    # A restart keeps the exact source POTCAR bytes. Reconstructing it from
+    # element names silently changes variants such as Pd_pv to Pd.
     scf_dir = os.path.join(calc_dir, "scf/")
     os.makedirs(scf_dir, exist_ok=True)
-    vasp_input.write_input(scf_dir)
+    if source_potcar_path is not None:
+        poscar.write_file(os.path.join(scf_dir, "POSCAR"))
+        Incar(incar_dict).write_file(os.path.join(scf_dir, "INCAR"))
+        kpoints.write_file(os.path.join(scf_dir, "KPOINTS"))
+        shutil.copy2(source_potcar_path, os.path.join(scf_dir, "POTCAR"))
+    else:
+        vasp_input = VaspInput(
+            poscar=poscar,
+            incar=incar_dict,
+            kpoints=kpoints,
+            potcar=Potcar(potcar_symbols)
+        )
+        vasp_input.write_input(scf_dir)
 
     # Copy over related files
     if chgcar_path is not None and os.path.exists(chgcar_path):
@@ -202,8 +223,10 @@ def vasp_scf(calculation_id: str, work_dir: str, struct: Structure,
     if wavecar_path is not None and os.path.exists(wavecar_path):
         shutil.copy2(wavecar_path, os.path.join(scf_dir, "WAVECAR"))
 
-    # Submit the SLURM job
-    return _submit_slurm_job("scf", scf_dir, attachment_path)
+    provenance = input_provenance(scf_dir)
+    result = _submit_slurm_job("scf", scf_dir, attachment_path)
+    result["input_provenance"] = provenance
+    return result
 
 
 def vasp_nscf(calculation_id: str, work_dir: str, struct: Structure, 
@@ -270,6 +293,37 @@ def vasp_nscf(calculation_id: str, work_dir: str, struct: Structure,
 
     # Submit the SLURM job
     return _submit_slurm_job("nscf", band_dir, attachment_path)
+
+
+def recover_completed_vasp_result(job_info: dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Recover a finished VASP job after SLURM has forgotten its job ID.
+
+    A parsed XML file alone can represent a partial run. Require VASP's normal
+    OUTCAR footer and convergence before promoting a record to completed.
+    """
+    calc_type = job_info.get("calc_type")
+    if calc_type not in {"relaxation", "scf"}:
+        return None
+    calculation_dir = Path(job_info.get("calculate_path") or "")
+    outcar = calculation_dir / "OUTCAR"
+    vasprun_path = calculation_dir / "vasprun.xml"
+    if not outcar.is_file() or not vasprun_path.is_file():
+        return None
+    try:
+        with outcar.open("rb") as output:
+            output.seek(max(0, outcar.stat().st_size - 8192))
+            if b"General timing and accounting informations for this job" not in output.read():
+                return None
+        vasprun = Vasprun(str(vasprun_path), parse_dos=False, parse_eigen=False)
+        if not vasprun.converged:
+            return None
+        parsed = _read_calculation_result(calc_type, str(calculation_dir))
+        if parsed.get("success") is False:
+            return None
+        return {**parsed, "status": "completed", "success": True, "error": None}
+    except Exception:
+        # Recovery is best-effort; malformed output must retain its scheduler error.
+        return None
 
 
 def check_status(calc_dict: dict[str, dict[str, Any]]) -> Dict[str, Any]:
@@ -340,6 +394,8 @@ def check_status(calc_dict: dict[str, dict[str, Any]]) -> Dict[str, Any]:
                             calc_type,
                             calculate_path
                         )
+                        if job_result.get("success") is False:
+                            job_status = "failed"
 
                     elif state == "TIMEOUT":
                         job_status = "timeout"
@@ -367,16 +423,14 @@ def check_status(calc_dict: dict[str, dict[str, Any]]) -> Dict[str, Any]:
 |     EEEEEEE  R     R  R     R  OOOOOOO  R     R     ###     ###     ###     |"""
 
                         try:
-                            log_path = os.path.join(
-                                calculate_path,
-                                "log"
-                            )
-
-                            if not os.path.exists(log_path):
-                                log_path = os.path.join(
-                                    calculate_path,
-                                    "OUTCAR"
-                                )
+                            if calc_type == "bader":
+                                log_path = os.path.join(calculate_path, "bader.err")
+                                if not os.path.isfile(log_path) or not os.path.getsize(log_path):
+                                    log_path = os.path.join(calculate_path, "bader.log")
+                            else:
+                                log_path = os.path.join(calculate_path, "log")
+                                if not os.path.exists(log_path):
+                                    log_path = os.path.join(calculate_path, "OUTCAR")
 
                             with open(log_path, "r") as f:
                                 content = f.read()
@@ -424,17 +478,23 @@ def check_status(calc_dict: dict[str, dict[str, Any]]) -> Dict[str, Any]:
                         )
                     }
 
+            if job_status == "unknown":
+                recovered = recover_completed_vasp_result(job_info)
+                if recovered is not None:
+                    job_result = recovered
+                    job_status = "completed"
+
             calc_dict[calc_id].update(job_result)
             calc_dict[calc_id]["status"] = job_status
+            if job_status not in {"running", "completed"}:
+                calc_dict[calc_id]["success"] = False
 
         except Exception as e:
-            calc_dict[calc_id] = {
-                "slurm_id": slurm_id,
-                "calc_type": calc_type,
-                "calculate_path": calculate_path,
-                "status": "error",
-                "error": str(e)
-            }
+            recovered = recover_completed_vasp_result(job_info)
+            if recovered is not None:
+                calc_dict[calc_id].update(recovered)
+            else:
+                calc_dict[calc_id].update({"status": "error", "error": str(e), "success": False})
 
     return calc_dict
 
@@ -472,6 +532,22 @@ def _read_calculation_result(calc_type: str, calculate_path: str) -> Dict[str, A
                 "status": "completed"
             }
             
+        elif calc_type == "bader":
+            output = Path(calculate_path)
+            result = json.loads((output / "bader_result.json").read_text())
+            atoms = result.get("atoms")
+            if result.get("success") is not True or not isinstance(atoms, list) or not atoms:
+                raise ValueError("Bader result is incomplete")
+            acf_path = output / "ACF.dat"
+            if parse_acf(acf_path, len(atoms)) != atoms:
+                raise ValueError("Bader result does not match ACF.dat")
+            return {
+                "success": True,
+                "status": "completed",
+                "acf_path": str(acf_path),
+                "bader_charges": atoms,
+            }
+
         elif calc_type == "nscf":
             # Read the band structure calculation result
             vasprun = Vasprun(os.path.join(calculate_path, "vasprun.xml"))

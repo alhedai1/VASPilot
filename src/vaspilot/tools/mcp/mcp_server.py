@@ -11,13 +11,14 @@ from ase.dft.kpoints import BandPath
 import yaml
 import math
 import numpy as np
-from .vasp_calculate import vasp_relaxation, vasp_scf, vasp_nscf, check_status, cancel_slurm_job
+from .vasp_calculate import vasp_relaxation, vasp_scf, vasp_nscf, check_status, cancel_slurm_job, recover_completed_vasp_result
 from .uma_calculate import uma_relaxation
 from .adsorption_tools import generate_adsorption_candidates, relax_adsorption_candidates
 from .adsorption_energy import (
     calculate_adsorption_energies,
     prepare_adsorption_energy_calculations,
 )
+from .bader_analysis import submit_bader_job
 from .adsorption_analysis import (
     load_analysis_scf_submission,
     prepare_adsorption_analysis_scf,
@@ -26,6 +27,7 @@ from .adsorption_analysis import (
 from .adsorption_workflow import run_adsorption_workflow
 from .struct_tools import search_materials_project, build_surface, build_adsorbate, analyze_crystal_structure, create_crystal_structure, make_supercell, rotate_structure, symmetrize_structure, scale_structure
 from .sqlite_database import VaspCalculationDB
+from .vasp_input_consistency import SCF_STAGE_TAGS, compact_setting, input_provenance, read_restart_inputs
 def main(config_path: str = None, port: int = 8933, host: str = "0.0.0.0"):
 
     # Load the config file
@@ -87,6 +89,7 @@ def main(config_path: str = None, port: int = 8933, host: str = "0.0.0.0"):
             "slurm_id": data.get("slurm_id"),
             "calculate_path": data.get("calculate_path"),
             "calc_type": data.get("calc_type"),
+            "input_provenance": data.get("input_provenance"),
         }
 
         if data.get("calc_type") == "relaxation":
@@ -105,6 +108,13 @@ def main(config_path: str = None, port: int = 8933, host: str = "0.0.0.0"):
                 "is_metal": data.get("is_metal")
             })
 
+        elif data.get("calc_type") == "bader":
+            llm_friendly_result.update({
+                "scf_calculation_id": data.get("restart_id"),
+                "acf_path": data.get("acf_path"),
+                "bader_charges": data.get("bader_charges"),
+            })
+
         elif data.get("calc_type") == "nscf":
             llm_friendly_result.update({
                 "efermi": data.get("efermi"),
@@ -115,12 +125,28 @@ def main(config_path: str = None, port: int = 8933, host: str = "0.0.0.0"):
         return _to_json_safe(llm_friendly_result)
 
     @mcp.tool(name="vasp_relaxation")
-    async def vasp_relaxation_tool(structure_path: str, incar_tags: Optional[Dict] = None, kpoint_num: Optional[tuple[int, int, int]] = None, potcar_map: Optional[Dict] = None) -> Dict[str, Any]:
+    async def vasp_relaxation_tool(
+        structure_path: Optional[str] = None,
+        incar_tags: Optional[Dict] = None,
+        kpoint_num: Optional[tuple[int, int, int]] = None,
+        potcar_map: Optional[Dict] = None,
+        relaxation_manifest_path: Optional[str] = None,
+        candidate_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """
         Submit a VASP structural relaxation job.
-        
+
+        For UMA candidates, pass relaxation_manifest_path (or the returned
+        output_directory) and candidate_id; the exact final_structure_path
+        is resolved internally. Never reconstruct
+        candidate filenames. Do not combine manifest mode with structure_path.
+        Input failures return retryable=false: correct the input before retrying.
+        Monitor only calculation IDs returned by successful submissions.
+
         Args:
-            structure_path: Path to the structure file (supports CIF, POSCAR, etc.).
+            structure_path: Direct structure file path; omit in manifest mode.
+            relaxation_manifest_path: Exact manifest_path or output_directory returned by relax_adsorption_candidates.
+            candidate_id: Exact candidate ID from that manifest; required in manifest mode.
             incar_tags: Additional INCAR parameters to merge with defaults. Use None unless explicitly specified by the user.
             kpoint_num: K-point mesh as a tuple (nx, ny, nz). If not provided, an automatic density of 40 is used.
             potcar_map: POTCAR mapping as {element: potcar}, e.g., {"Bi": "Bi_d", "Se": "Se"}. Use None unless explicitly specified by the user.
@@ -132,11 +158,57 @@ def main(config_path: str = None, port: int = 8933, host: str = "0.0.0.0"):
             - error: Error message, if any
             - status: Job status ("pending"/"failed")
         """
-        # Convert input parameters
+        # Resolve artifact references before generating a job ID or submitting.
+        try:
+            if relaxation_manifest_path is not None:
+                if structure_path is not None or not candidate_id:
+                    raise ValueError(
+                        "Provide relaxation_manifest_path and candidate_id without structure_path"
+                    )
+                manifest_path = Path(relaxation_manifest_path).expanduser().resolve()
+                if manifest_path.is_dir():
+                    manifest_path = manifest_path / "relaxation_manifest.json"
+                manifest = json.loads(manifest_path.read_text())
+                if not isinstance(manifest, dict) or manifest.get("artifact_kind") != "ranked_adsorption_relaxations":
+                    raise ValueError("Expected a ranked_adsorption_relaxations manifest")
+                if manifest.get("success") is not True:
+                    raise ValueError("Relaxation manifest is not successful")
+                results = manifest.get("results")
+                if not isinstance(results, list) or any(not isinstance(item, dict) for item in results):
+                    raise ValueError("Relaxation manifest must contain a results list of objects")
+                matches = [item for item in results if item.get("candidate_id") == candidate_id]
+                if len(matches) != 1:
+                    raise ValueError(f"Expected exactly one manifest entry for candidate_id={candidate_id!r}")
+                candidate = matches[0]
+                if candidate.get("converged") is not True:
+                    raise ValueError(f"Candidate {candidate_id!r} is not converged")
+                source = candidate.get("final_structure_path")
+                if not isinstance(source, str) or not source.strip():
+                    raise ValueError("Candidate has no final_structure_path")
+                resolved_path = Path(source).expanduser()
+                if not resolved_path.is_absolute():
+                    resolved_path = manifest_path.parent / resolved_path
+            else:
+                if candidate_id is not None or not structure_path:
+                    raise ValueError(
+                        "Provide structure_path or both relaxation_manifest_path and candidate_id"
+                    )
+                resolved_path = Path(structure_path).expanduser()
+            if not resolved_path.is_file():
+                raise FileNotFoundError(f"Structure file not found: {resolved_path}")
+            struct = Structure.from_file(str(resolved_path))
+        except (OSError, ValueError, TypeError, KeyError, IndexError) as exc:
+            return {
+                "success": False,
+                "status": "failed",
+                "error_code": "INVALID_RELAXATION_INPUT",
+                "error": str(exc),
+                "retryable": False,
+                "calculation_id": None,
+                "slurm_id": None,
+            }
 
-        # Generate a random UUID
         calculation_id = str(uuid.uuid4())
-        struct = Structure.from_file(structure_path)
         if kpoint_num is None:
             factor = 40 * np.power(struct.lattice.a * struct.lattice.b * struct.lattice.c / struct.lattice.volume , 1/3)
             kpoint_float = (factor/struct.lattice.a, factor/struct.lattice.b, factor/struct.lattice.c)
@@ -184,97 +256,323 @@ def main(config_path: str = None, port: int = 8933, host: str = "0.0.0.0"):
         """
         return uma_relaxation(structure_path)
 
-    async def _submit_vasp_scf(restart_id: Optional[str] = None, structure_path: Optional[str] = None, soc: bool=False, incar_tags: Optional[Dict] = None, kpoint_num: Optional[tuple[int, int, int]] = None, potcar_map: Optional[Dict] = None) -> Dict[str, Any]:
-        """
-        Submit a VASP self-consistent field (SCF) job.
-        
-        Args:
-            restart_id: ID of a previous calculation. If provided, reuse its structure and charge density.
-            structure_path: Path to the structure file; required when restart_id is not provided.
-            soc: Whether to include spin–orbit coupling. Defaults to False.
-            incar_tags: Additional INCAR parameters to merge with defaults. Use None unless explicitly specified by the user.
-            kpoint_num: K-point mesh as a tuple (nx, ny, nz). If not provided, an automatic density of 40 is used.
-            potcar_map: POTCAR mapping as {element: potcar}, e.g., {"Bi": "Bi_pv", "Se": "Se_pv"}. Use None unless explicitly specified by the user.
-        Returns:
-            A dict containing the submission result with keys:
-            - calculation_id: Unique calculation identifier
-            - slurm_id: SLURM job ID
-            - success: Whether submission succeeded
-            - error: Error message, if any
-            - status: Job status ("pending"/"failed")
-        """
-        # Convert input parameters
-
-        # Generate a random UUID
-        calculation_id = str(uuid.uuid4())
+    async def _submit_vasp_scf(restart_id: Optional[str] = None, structure_path: Optional[str] = None, soc: bool = False, incar_tags: Optional[Dict] = None, kpoint_num: Optional[tuple[int, int, int]] = None, potcar_map: Optional[Dict] = None) -> Dict[str, Any]:
+        """Submit a static SCF, inheriting the physical inputs of a VASP restart."""
+        if incar_tags is not None:
+            normalized_tags = {}
+            for key, value in incar_tags.items():
+                normalized = str(key).upper()
+                if normalized in normalized_tags:
+                    return {"success": False, "error_code": "INVALID_SCF_INPUT",
+                            "error": f"Duplicate INCAR override for {normalized}", "retryable": False}
+                normalized_tags[normalized] = value
+            incar_tags = normalized_tags
+        source_dir = None
+        source_incar = None
+        source_kpoints = None
+        source_potcar_path = None
+        source_provenance = None
         if restart_id is not None:
             restart_record = read_record(restart_id)
-            if restart_record is None:
-                return {"success": False, "error": f"Restart record {restart_id} not found"}
-            struct = restart_record['structure']
-            chgcar_path = os.path.join(restart_record['calculate_path'], "CHGCAR")
-            wavecar_path = os.path.join(restart_record['calculate_path'], "WAVECAR")
+            if restart_record is not None and restart_record.get("status") in {
+                "unknown", "error", "submitted", "running"
+            }:
+                recovered = recover_completed_vasp_result(restart_record)
+                if recovered is not None:
+                    restart_record.update(recovered)
+                    write_record(restart_id, restart_record)
+            if restart_record is None or restart_record.get("status") != "completed":
+                return {"success": False, "error_code": "INVALID_RESTART_INPUT",
+                        "error": f"Restart calculation {restart_id} is missing or not completed",
+                        "retryable": False}
+            if restart_record.get("calc_type") not in {"relaxation", "scf"}:
+                return {"success": False, "error_code": "INVALID_RESTART_INPUT",
+                        "error": "SCF restart requires a VASP relaxation or SCF calculation",
+                        "retryable": False}
+            try:
+                struct = restart_record["structure"]
+                source_dir = Path(restart_record["calculate_path"])
+                source_incar, source_kpoints, source_potcar = read_restart_inputs(source_dir)
+                source_provenance = input_provenance(source_dir)
+                if restart_record.get("input_provenance") is None:
+                    restart_record["input_provenance"] = source_provenance
+                    write_record(restart_id, restart_record)
+                if potcar_map is None:
+                    source_potcar_path = str(source_potcar)
+            except (KeyError, TypeError, OSError, ValueError) as exc:
+                return {"success": False, "error_code": "INVALID_RESTART_INPUT",
+                        "error": str(exc), "retryable": False}
         else:
             if structure_path is None:
                 return {"success": False, "error": "structure_path is required when restart_id is not provided"}
-            else:
-                try:
-                    struct = Structure.from_file(structure_path)
-                except Exception as e:
-                    return {"success": False, "error": f"Failed to read structure from {structure_path}: {e}"}
-            chgcar_path = None
-            wavecar_path = None
-        if kpoint_num is None:
-            factor = 40 * np.power(struct.lattice.a * struct.lattice.b * struct.lattice.c / struct.lattice.volume , 1/3)
-            kpoint_float = (factor/struct.lattice.a, factor/struct.lattice.b, factor/struct.lattice.c)
-            kpoint_num = (max(math.ceil(kpoint_float[0]), 1), max(math.ceil(kpoint_float[1]), 1), max(math.ceil(kpoint_float[2]), 1))
-        kpts = Kpoints.gamma_automatic(kpts = kpoint_num)
-        incar = {}
-        if soc:
-            incar.update(settings['VASP_default_INCAR']['scf_soc'])
+            try:
+                struct = Structure.from_file(structure_path)
+            except Exception as exc:
+                return {"success": False, "error": f"Failed to read structure from {structure_path}: {exc}"}
+
+        if source_incar is not None and potcar_map is not None:
+            required_symbols = {site.specie.symbol for site in struct}
+            missing_symbols = required_symbols - set(potcar_map)
+            extra_symbols = set(potcar_map) - required_symbols
+            if missing_symbols or extra_symbols:
+                return {"success": False, "error_code": "INCOMPATIBLE_RESTART_INPUT",
+                        "error": "POTCAR override must map every element exactly; "
+                                 f"missing={sorted(missing_symbols)}, extra={sorted(extra_symbols)}",
+                        "retryable": False}
+        if (source_incar is not None and potcar_map is not None
+                and "NELECT" in source_incar
+                and not (incar_tags and "NELECT" in incar_tags)):
+            return {"success": False, "error_code": "INCOMPATIBLE_RESTART_INPUT",
+                    "error": "Changing POTCAR with an explicit source NELECT requires a new explicit NELECT",
+                    "retryable": False}
+
+        if kpoint_num is None and source_kpoints is not None:
+            kpts = source_kpoints
         else:
-            incar.update(settings['VASP_default_INCAR']['scf_nsoc'])
+            if kpoint_num is None:
+                factor = 40 * np.power(struct.lattice.a * struct.lattice.b * struct.lattice.c / struct.lattice.volume, 1 / 3)
+                kpoint_float = (factor / struct.lattice.a, factor / struct.lattice.b, factor / struct.lattice.c)
+                kpoint_num = tuple(max(math.ceil(n), 1) for n in kpoint_float)
+            kpts = Kpoints.gamma_automatic(kpts=kpoint_num)
+
+        source_soc = bool(source_incar.get("LSORBIT", False)) if source_incar is not None else False
+        effective_soc = bool(soc or (source_soc and not (incar_tags and "LSORBIT" in incar_tags)))
+        scf_defaults = settings["VASP_default_INCAR"]["scf_soc" if effective_soc else "scf_nsoc"]
+        if source_incar is None:
+            incar = dict(scf_defaults)
+        else:
+            incar = {key: value for key, value in source_incar.items() if key not in SCF_STAGE_TAGS}
+            incar.update({key: value for key, value in scf_defaults.items() if key in SCF_STAGE_TAGS})
+            if "EDIFF" in source_incar:
+                incar["EDIFF"] = min(float(source_incar["EDIFF"]), float(incar.get("EDIFF", source_incar["EDIFF"])))
+            if "NELM" in source_incar:
+                incar["NELM"] = max(int(source_incar["NELM"]), int(incar.get("NELM", source_incar["NELM"])))
+        if soc:
+            incar["LSORBIT"] = True
         if incar_tags is not None:
+            for key, required in (("NSW", 0), ("IBRION", -1)):
+                if key in incar_tags and incar_tags[key] != required:
+                    return {"success": False, "error_code": "INVALID_SCF_INPUT",
+                            "error": f"Static SCF requires {key}={required}", "retryable": False}
             incar.update(incar_tags)
+        incar["NSW"] = 0
+        incar["IBRION"] = -1
         if incar.get("ISPIN", 1) == 1 and not incar.get("LSORBIT", False):
             incar.pop("MAGMOM", None)
-        
-        # Run the calculation
+
+        # Restart files are copied only if VASP is instructed to read them.
+        chgcar_path = None
+        wavecar_path = None
+        try:
+            icharg = int(incar_tags.get("ICHARG", 2)) if incar_tags else 2
+            istart = int(incar_tags.get("ISTART", 0)) if incar_tags else 0
+        except (TypeError, ValueError):
+            return {"success": False, "error_code": "INVALID_SCF_INPUT",
+                    "error": "ICHARG and ISTART must be integers", "retryable": False}
+        incar["ICHARG"] = icharg
+        incar["ISTART"] = istart
+        if icharg >= 10:
+            return {"success": False, "error_code": "INVALID_RESTART_INPUT",
+                    "error": "vasp_scf requires self-consistent charge (ICHARG < 10)",
+                    "retryable": False}
+        if icharg == 1 or istart > 0:
+            if source_dir is None or potcar_map is not None:
+                return {"success": False, "error_code": "INCOMPATIBLE_RESTART_INPUT",
+                        "error": "CHGCAR/WAVECAR reuse requires the source POTCAR without potcar_map override",
+                        "retryable": False}
+            for key, default in (("ISPIN", 1), ("LSORBIT", False),
+                                 ("LNONCOLLINEAR", False), ("NELECT", None)):
+                if incar.get(key, default) != source_incar.get(key, default):
+                    return {"success": False, "error_code": "INCOMPATIBLE_RESTART_INPUT",
+                            "error": f"CHGCAR/WAVECAR reuse requires unchanged {key}",
+                            "retryable": False}
+        if icharg == 1:
+            path = source_dir / "CHGCAR"
+            if not path.is_file() or path.stat().st_size == 0:
+                return {"success": False, "error_code": "INVALID_RESTART_INPUT",
+                        "error": f"ICHARG=1 requires a nonempty CHGCAR: {path}",
+                        "retryable": False}
+            chgcar_path = str(path)
+        if istart > 0:
+            if kpoint_num is not None:
+                return {"success": False, "error_code": "INCOMPATIBLE_RESTART_INPUT",
+                        "error": "WAVECAR reuse requires the source KPOINTS without kpoint_num override",
+                        "retryable": False}
+            path = source_dir / "WAVECAR"
+            if not path.is_file() or path.stat().st_size == 0:
+                return {"success": False, "error_code": "INVALID_RESTART_INPUT",
+                        "error": f"ISTART={istart} requires a nonempty WAVECAR: {path}",
+                        "retryable": False}
+            wavecar_path = str(path)
+
+        calculation_id = str(uuid.uuid4())
         result = vasp_scf(
             calculation_id=calculation_id,
-            work_dir=settings['work_dir'],
+            work_dir=settings["work_dir"],
             struct=struct,
             kpoints=kpts,
             incar_dict=incar,
             chgcar_path=chgcar_path,
             wavecar_path=wavecar_path,
             attachment_path=attachment_path,
-            potcar_map=potcar_map
+            potcar_map=potcar_map,
+            source_potcar_path=source_potcar_path,
         )
-
-        # Save the record
-        result['calculation_id'] = calculation_id
-        result['soc'] = soc
-        result['incar_tags'] = incar_tags
-        result['restart_id'] = restart_id
+        result["calculation_id"] = calculation_id
+        result["soc"] = bool(incar.get("LSORBIT", effective_soc))
+        result["incar_tags"] = incar_tags
+        result["restart_id"] = restart_id
+        if source_provenance is not None:
+            provenance = result.setdefault("input_provenance", {})
+            provenance["restart_source"] = {
+                "calculation_id": restart_id,
+                "potcar_sha256": source_provenance["potcar_sha256"],
+                "encut_eV": source_provenance["encut_eV"],
+                "kpoint_mesh": source_provenance["kpoint_mesh"],
+            }
+            provenance["explicit_changes"] = {
+                "potcar_map": potcar_map,
+                "kpoint_num": list(kpoint_num) if kpoint_num is not None else None,
+                "incar_tags": {key: compact_setting(value) for key, value in (incar_tags or {}).items()},
+                "soc_requested": soc,
+            }
         write_record(calculation_id, result)
-        
-        llm_friendly_result = {
-            'calculation_id': calculation_id,
-            'slurm_id': result['slurm_id'],
-            'success': result['success'],
-            'error': result['error'],
-            'status': result['status'],
-            'calculate_path': result['calculate_path']
+        return {
+            "calculation_id": calculation_id,
+            "slurm_id": result.get("slurm_id"),
+            "success": result.get("success"),
+            "error": result.get("error"),
+            "status": result.get("status"),
+            "calculate_path": result.get("calculate_path"),
+            "input_provenance": result.get("input_provenance"),
         }
-        return llm_friendly_result
 
     @mcp.tool(name="vasp_scf")
-    async def vasp_scf_tool(restart_id: Optional[str] = None, structure_path: Optional[str] = None, soc: bool=False, incar_tags: Optional[Dict] = None, kpoint_num: Optional[tuple[int, int, int]] = None, potcar_map: Optional[Dict] = None) -> Dict[str, Any]:
-        """Submit a generic VASP SCF calculation."""
+    async def vasp_scf_tool(
+        restart_id: Optional[str] = None,
+        structure_path: Optional[str] = None,
+        soc: bool = False,
+        incar_tags: Optional[Dict] = None,
+        kpoint_num: Optional[tuple[int, int, int]] = None,
+        potcar_map: Optional[Dict] = None,
+        relaxation_manifest_path: Optional[str] = None,
+        analyses: Optional[List[Literal["bader", "lobster"]]] = None,
+        candidate_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Submit a VASP SCF calculation.
+
+        For adsorption analysis, supply relaxation_manifest_path and optional
+        analyses/candidate_id. The eligible UMA candidate and static analysis
+        settings are selected and validated internally. incar_tags and
+        kpoint_num customize those settings. Do not combine this mode with
+        restart_id, structure_path, SOC, or potcar_map.
+
+        For a completed VASP relaxation, pass its restart_id. The exact
+        POTCAR, k-point mesh, and explicit electronic INCAR settings are
+        inherited unless overridden. Set analyses=["bader"] to request
+        static charge outputs. By default the SCF starts from atomic charge;
+        ICHARG=1 reads a compatible CHGCAR if one exists.
+        """
+        if relaxation_manifest_path is not None:
+            conflicts = [
+                name for name, value in (
+                    ("restart_id", restart_id),
+                    ("structure_path", structure_path),
+                    ("soc", soc if soc else None),
+                    ("potcar_map", potcar_map),
+                ) if value is not None
+            ]
+            if conflicts:
+                return {
+                    "success": False,
+                    "error": "relaxation_manifest_path cannot be combined with "
+                    + ", ".join(conflicts),
+                }
+            try:
+                prepared = prepare_adsorption_analysis_scf(
+                    relaxation_manifest=relaxation_manifest_path,
+                    output_directory=settings["structure_path"],
+                    analyses=analyses,
+                    candidate_id=candidate_id,
+                    kpoint_num=list(kpoint_num) if kpoint_num is not None else None,
+                    incar_overrides=incar_tags,
+                )
+                path, arguments = load_analysis_scf_submission(
+                    prepared["manifest_path"]
+                )
+            except (ValueError, FileNotFoundError, json.JSONDecodeError, TypeError) as exc:
+                return {
+                    "success": False,
+                    "error_code": "invalid_adsorption_analysis_scf",
+                    "error": str(exc),
+                    "retryable": False,
+                }
+            result = await _submit_vasp_scf(**arguments)
+            return write_analysis_scf_submission(path, result)
+        if candidate_id is not None:
+            return {
+                "success": False,
+                "error": "candidate_id requires relaxation_manifest_path",
+                "retryable": False,
+            }
+        if analyses is not None:
+            if analyses != ["bader"]:
+                return {
+                    "success": False,
+                    "error": "Only analyses=['bader'] is supported without relaxation_manifest_path",
+                    "retryable": False,
+                }
+            if restart_id is None and structure_path is None:
+                return {
+                    "success": False,
+                    "error": "Bader SCF requires restart_id or structure_path",
+                    "retryable": False,
+                }
+            if restart_id is not None:
+                source_record = read_record(restart_id)
+                if (
+                    source_record is None
+                    or source_record.get("status") != "completed"
+                    or source_record.get("calc_type") not in {"relaxation", "scf"}
+                ):
+                    return {
+                        "success": False,
+                        "error": "Bader SCF restart requires a completed relaxation or SCF calculation",
+                        "retryable": False,
+                    }
+            required_tags = {
+                "NSW": 0, "IBRION": -1, "LCHARG": True, "LAECHG": True,
+            }
+            for tag, required_value in required_tags.items():
+                if incar_tags is not None and tag in incar_tags and incar_tags[tag] != required_value:
+                    return {
+                        "success": False,
+                        "error": f"Bader SCF requires {tag}={required_value}",
+                        "retryable": False,
+                    }
+            incar_tags = {**(incar_tags or {}), **required_tags}
         return await _submit_vasp_scf(
             restart_id, structure_path, soc, incar_tags, kpoint_num, potcar_map
         )
+
+    @mcp.tool(name="run_bader")
+    async def run_bader_tool(scf_calculation_id: str) -> Dict[str, Any]:
+        """Submit Bader analysis for a completed VASP SCF calculation ID.
+
+        The SCF must have CHGCAR, AECCAR0, and AECCAR2. The tool schedules
+        charge summation and Bader on SLURM, then returns a new calculation ID.
+        Pass that ID to wait_calculations for ACF.dat and per-atom electrons.
+        """
+        result = submit_bader_job(
+            scf_calculation_id,
+            read_record(scf_calculation_id),
+            Path(settings["work_dir"]),
+            settings.get("bader_executable"),
+            partition=settings.get("bader_partition"),
+        )
+        if result["success"]:
+            write_record(result["calculation_id"], result)
+        return result
 
     @mcp.tool(name="vasp_nscf_kpath")
     async def vasp_nscf_kpath_tool(restart_id: str, soc: bool=True, incar_tags: Optional[Dict] = None, kpath: Optional[str] = None, n_kpoints: Optional[int] = None, potcar_map: Optional[Dict] = None) -> Dict[str, Any]:
@@ -485,15 +783,22 @@ def main(config_path: str = None, port: int = 8933, host: str = "0.0.0.0"):
         """
         # Gather calculation info from records
         calc_dict = {}
+        cached_results = {}
         llm_friendly_result = {}
-        
-        # Collect valid calculation records
+
+        # Completed results are durable; SLURM may forget older job IDs.
         for calc_id in calculation_ids:
             record = read_record(calc_id)
             if record is not None:
-                calc_dict[calc_id] = record
-        
-        # Check SLURM status for calculations that have records
+                if record.get("status") == "completed" or (
+                    record.get("calc_type") == "bader"
+                    and record.get("status") in {"failed", "timeout", "cancelled", "error"}
+                ):
+                    cached_results[calc_id] = record
+                else:
+                    calc_dict[calc_id] = record
+
+        # Check SLURM status for calculations that still need monitoring.
         if calc_dict:
             updated_results = check_status(calc_dict)
             # Update the record
@@ -501,6 +806,8 @@ def main(config_path: str = None, port: int = 8933, host: str = "0.0.0.0"):
                 write_record(calc_id, result)
                 calc_dict[calc_id] = result
         
+        calc_dict.update(cached_results)
+
         # Build the return result for all calculation IDs
         for calc_id in calculation_ids:
             if calc_id in calc_dict:
@@ -878,7 +1185,7 @@ def main(config_path: str = None, port: int = 8933, host: str = "0.0.0.0"):
         Returns:
             Ranked candidate results and trajectory artifact paths.
         """
-        return relax_adsorption_candidates(
+        result = relax_adsorption_candidates(
             candidate_structure_paths=candidate_structure_paths,
             candidate_set=candidate_set,
             candidate_manifest_path=candidate_manifest_path,
@@ -894,6 +1201,11 @@ def main(config_path: str = None, port: int = 8933, host: str = "0.0.0.0"):
             penetration_depth=penetration_depth,
             severe_slab_displacement=severe_slab_displacement,
         )
+        # Keep the reference visible even when an agent view truncates the
+        # detailed candidate results later in this response.
+        if result.get("manifest_path"):
+            return {"manifest_path": result["manifest_path"], **result}
+        return result
 
     @mcp.tool(name="prepare_adsorption_energy_calculations")
     async def prepare_adsorption_energy_calculations_tool(
@@ -935,62 +1247,6 @@ def main(config_path: str = None, port: int = 8933, host: str = "0.0.0.0"):
                 "error": str(exc),
                 "retryable": False,
             }
-
-    @mcp.tool(name="prepare_adsorption_analysis_scf")
-    async def prepare_adsorption_analysis_scf_tool(
-        relaxation_manifest_path: str,
-        analyses: Optional[List[Literal["bader", "lobster"]]] = None,
-        candidate_id: Optional[str] = None,
-        kpoint_num: Optional[List[int]] = None,
-        incar_overrides: Optional[Dict[str, Any]] = None,
-        output_directory: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        """Select a converged UMA candidate and prepare a static VASP SCF.
-
-        The default selection is the lowest final UMA energy among converged,
-        geometrically valid candidates. This writes an immutable input artifact
-        and returns exact arguments for a subsequent vasp_scf call; it does not
-        submit VASP or run Bader/LOBSTER.
-        """
-        try:
-            return prepare_adsorption_analysis_scf(
-                relaxation_manifest=relaxation_manifest_path,
-                output_directory=output_directory or structure_path,
-                analyses=analyses,
-                candidate_id=candidate_id,
-                kpoint_num=kpoint_num,
-                incar_overrides=incar_overrides,
-            )
-        except (ValueError, FileNotFoundError, json.JSONDecodeError) as exc:
-            return {
-                "success": False,
-                "error_code": "invalid_adsorption_analysis_scf_preparation",
-                "error": str(exc),
-                "retryable": False,
-            }
-
-    @mcp.tool(name="submit_adsorption_analysis_scf")
-    async def submit_adsorption_analysis_scf_tool(
-        preparation_manifest_path: str,
-    ) -> Dict[str, Any]:
-        """Validate a prepared adsorption-analysis artifact and submit its SCF.
-
-        The exact structure, INCAR settings, SOC choice, and k-point mesh are
-        loaded from the manifest. They cannot be replaced by agent-supplied
-        values. A durable submission manifest links the preparation to the VASP
-        calculation and prevents accidental successful resubmission.
-        """
-        try:
-            path, arguments = load_analysis_scf_submission(preparation_manifest_path)
-        except (ValueError, FileNotFoundError, json.JSONDecodeError, TypeError) as exc:
-            return {
-                "success": False,
-                "error_code": "invalid_adsorption_analysis_scf_submission",
-                "error": str(exc),
-                "retryable": False,
-            }
-        result = await _submit_vasp_scf(**arguments)
-        return write_analysis_scf_submission(path, result)
 
     @mcp.tool(name="calculate_adsorption_energies")
     async def calculate_adsorption_energies_tool(

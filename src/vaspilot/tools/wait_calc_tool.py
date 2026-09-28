@@ -72,7 +72,7 @@ class WaitCalcTool(BaseTool):
                 for calc_id in pending_calc_ids.copy():
                     if calc_id in status_result:
                         status = status_result[calc_id].get("status", "unknown")
-                        if status in ["completed", "failed", "cancelled", "unknown", "timeout"]:
+                        if status in ["completed", "failed", "cancelled", "unknown", "timeout", "error"]:
                             # Task finished, save the result and remove it from the pending list
                             completed_results[calc_id] = status_result[calc_id]
                             newly_completed.append(calc_id)
@@ -84,7 +84,7 @@ class WaitCalcTool(BaseTool):
                 # Summarize the current status
                 running_count = len(pending_calc_ids)
                 completed_count = len([r for r in completed_results.values() if r.get("status") == "completed"])
-                failed_count = len([r for r in completed_results.values() if r.get("status") in ["failed", "unknown"]])
+                failed_count = len([r for r in completed_results.values() if r.get("status") in ["failed", "unknown", "cancelled", "timeout", "error"]])
 
                 if newly_completed:
                     print(f"Newly completed tasks: {newly_completed}")

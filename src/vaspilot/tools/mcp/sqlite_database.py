@@ -30,6 +30,7 @@ class VaspCalculationDB:
                     status TEXT,
                     calculate_path TEXT,
                     calc_type TEXT,
+                    acf_path TEXT,
 
                     -- relaxation-related fields
                     total_energy REAL,
@@ -59,9 +60,20 @@ class VaspCalculationDB:
                     stress_blob BLOB,
                     incar_tags_blob BLOB,
                     cbm_blob BLOB,
-                    vbm_blob BLOB
+                    vbm_blob BLOB,
+                    bader_charges_blob BLOB,
+                    input_provenance_blob BLOB
                 )
             """)
+
+            # Existing calculation databases predate Bader result fields.
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(calculations)")}
+            if "acf_path" not in columns:
+                conn.execute("ALTER TABLE calculations ADD COLUMN acf_path TEXT")
+            if "bader_charges_blob" not in columns:
+                conn.execute("ALTER TABLE calculations ADD COLUMN bader_charges_blob BLOB")
+            if "input_provenance_blob" not in columns:
+                conn.execute("ALTER TABLE calculations ADD COLUMN input_provenance_blob BLOB")
 
             # Create indexes to improve query performance
             conn.execute("CREATE INDEX IF NOT EXISTS idx_calc_type ON calculations(calc_type)")
@@ -85,6 +97,7 @@ class VaspCalculationDB:
             'error': data.get('error'),
             'status': data.get('status'),
             'calculate_path': data.get('calculate_path'),
+            'acf_path': data.get('acf_path'),
             'calc_type': data.get('calc_type'),
             'total_energy': data.get('total_energy'),
             'max_force': data.get('max_force'),
@@ -109,7 +122,9 @@ class VaspCalculationDB:
             'stress': 'stress_blob',
             'incar_tags': 'incar_tags_blob',
             'cbm': 'cbm_blob',
-            'vbm': 'vbm_blob'
+            'vbm': 'vbm_blob',
+            'bader_charges': 'bader_charges_blob',
+            'input_provenance': 'input_provenance_blob'
         }
 
         for data_key, blob_key in complex_field_mapping.items():
@@ -175,7 +190,9 @@ class VaspCalculationDB:
                 'stress_blob': 'stress',
                 'incar_tags_blob': 'incar_tags',
                 'cbm_blob': 'cbm',
-                'vbm_blob': 'vbm'
+                'vbm_blob': 'vbm',
+                'bader_charges_blob': 'bader_charges',
+                'input_provenance_blob': 'input_provenance'
             }
 
             for blob_key, data_key in blob_field_mapping.items():

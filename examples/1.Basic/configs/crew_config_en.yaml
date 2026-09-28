@@ -193,16 +193,39 @@ agents:
       converged, not-converged, and failed statuses separately. Rank only candidates
       that the tool ranks.
 
+      For VASP refinement of UMA candidates, call `vasp_relaxation` with the exact
+      returned `manifest_path` as `relaxation_manifest_path` and a `candidate_id`
+      from its results. If only `output_directory` survived a handoff, pass that
+      directory unchanged as `relaxation_manifest_path`; the tool resolves its
+      `relaxation_manifest.json`. Omit `structure_path`.
+      Preserve the relaxation manifest path and candidate IDs in every handoff.
+      If a tool returns `retryable=false`, stop that branch and report the error;
+      retry only after correcting the input. Never guess filenames or use plotting
+      tools to inspect directories. Call `wait_calculations` only with calculation
+      IDs returned by successful submissions; never use placeholder IDs.
+
       Use UMA relaxation for inexpensive adsorption screening. Use VASP relaxation
       when DFT refinement or consistently relaxed DFT reference structures are
       explicitly requested. Never mix energies produced by different methods or
       settings in one adsorption-energy equation.
 
-      For Bader or LOBSTER analysis after UMA screening, call
-      `prepare_adsorption_analysis_scf`, then pass only its complete
-      `manifest_path` to `submit_adsorption_analysis_scf`. Do not manually copy
-      manifest settings into `vasp_scf`, and do not treat a preparation artifact
-      ID as a calculation ID.
+      For Bader or LOBSTER analysis after UMA screening, call `vasp_scf`
+      with the complete UMA relaxation_manifest_path and requested analyses.
+      The candidate selection, static SCF settings, and submission checks run
+      internally. Use the returned calculation_id to track the VASP job.
+
+      When Bader analysis is requested after UMA relaxation, call `vasp_scf`
+      with `analyses=["bader"]` and the UMA relaxation manifest. After VASP
+      relaxation, call `vasp_scf` with `analyses=["bader"]` and the completed
+      VASP relaxation calculation_id as `restart_id`. Omit `potcar_map`,
+      `kpoint_num`, and electronic INCAR overrides on a VASP restart unless
+      the user explicitly requests changed settings; the tool inherits the
+      source POTCAR, k-point mesh, and electronic settings by default. The SCF
+      tool sets the required charge-output and static INCAR tags in either case. Wait for
+      that SCF calculation to complete, then pass its calculation_id to
+      `run_bader` and wait on the returned Bader calculation_id. Report the
+      per-atom electron counts and ACF.dat path. If submission fails, report
+      the error and do not wait on a missing calculation ID.
 
       For adsorption-energy evaluation:
         1. Call `prepare_adsorption_energy_calculations` using the complete
@@ -226,13 +249,12 @@ agents:
     tools: 
       - wait_calc_tool
       - relax_adsorption_candidates
-      - prepare_adsorption_analysis_scf
-      - submit_adsorption_analysis_scf
       - prepare_adsorption_energy_calculations
       - calculate_adsorption_energies
       - vasp_relaxation
       - uma_relaxation
       - vasp_scf
+      - run_bader
       - vasp_nscf_kpath
       - vasp_nscf_uniform
       - python_plot

@@ -8,6 +8,10 @@ db_path: /workspace/team/material/VASPilot/examples/1.Basic/mcp/record/record.db
 mp_api_key: JF8xfYq3gTya7toiyrAxVWG2yJ4QM5VY
 #Directory for storing the downloaded structures.
 structure_path: /workspace/team/material/VASPilot/examples/1.Basic/mcp/downloads
+# Set this to the Bader executable installed on the submission and compute nodes.
+bader_executable: /home/ahmed/.conda/envs/vaspilot/bin/bader
+# SLURM partition for Bader post-processing.
+bader_partition: local
 #Default INCAR settings for different VASP jobs.
 VASP_default_INCAR:
   relaxation:
